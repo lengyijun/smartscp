@@ -2,6 +2,7 @@ use pathdiff::diff_paths;
 use ssh2::Error;
 use ssh2::Session;
 use ssh2::Sftp;
+use ssh2_config::HostParams;
 use ssh2_config::SshConfig;
 use std::collections::HashSet;
 use std::env;
@@ -12,6 +13,7 @@ use std::net::TcpStream;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use users::{get_current_uid, get_user_by_uid};
 use walkdir::WalkDir;
 
 #[derive(Debug)]
@@ -105,47 +107,10 @@ fn main() -> Result<(), Error> {
         }
     };
 
-    let ssh_config_location = {
-        let mut pf = PathBuf::from(env!("HOME"));
-        pf.push(".ssh");
-        pf.push("config");
-        pf
-    };
+    let mut sess = get_remote_host(&remote_host)?;
 
-    let mut reader =
-        BufReader::new(File::open(ssh_config_location).expect("Could not open configuration file"));
-    let config = SshConfig::default()
-        .parse(&mut reader)
-        .expect("Failed to parse configuration");
-
-    // Query attributes for a certain host
-    let params = config.query(&remote_host);
-
-    let tcp = TcpStream::connect(format!(
-        "{}:{}",
-        params.host_name.unwrap(),
-        params.port.unwrap_or(22)
-    ))
-    .unwrap();
-    let mut sess = Session::new().unwrap();
-    sess.set_tcp_stream(tcp);
-    sess.handshake().unwrap();
-
-    for identity_file in &params.identity_file.unwrap() {
-        match sess.userauth_pubkey_file(&params.user.clone().unwrap(), None, &identity_file, None) {
-            Ok(_) => {
-                if sess.authenticated() {
-                    break;
-                }
-            }
-            Err(_) => {}
-        }
-    }
-    if !sess.authenticated() {
-        panic!("authenticated failed")
-    }
-    let remote_home_path = get_remote_home(&mut sess).unwrap();
-    let sftp = sess.sftp().unwrap();
+    let remote_home_path = get_remote_home(&mut sess)?;
+    let sftp = sess.sftp()?;
 
     let connection = Connection::new(remote_path, &local_path, remote_home_path);
 
@@ -369,4 +334,122 @@ fn get_remote_home(sess: &mut Session) -> Result<String, Error> {
     channel.close()?;
     channel.wait_close()?;
     Ok(s)
+}
+
+fn get_remote_host(remote_host: &str) -> Result<Session, Error> {
+    let param = match remote_host.split_once(|x| x == '@') {
+        Some((user_name, ip)) => HostParams {
+            bind_address: None,
+            bind_interface: None,
+            ca_signature_algorithms: None,
+            certificate_file: None,
+            ciphers: None,
+            compression: None,
+            connection_attempts: None,
+            connect_timeout: None,
+            host_key_algorithms: None,
+            host_name: Some(ip.to_owned()),
+            identity_file: None,
+            ignore_unknown: None,
+            kex_algorithms: None,
+            mac: None,
+            port: None,
+            pubkey_accepted_algorithms: None,
+            pubkey_authentication: None,
+            remote_forward: None,
+            server_alive_interval: None,
+            tcp_keep_alive: None,
+            user: Some(user_name.to_owned()),
+        },
+        None => {
+            let ssh_config_location: PathBuf = [env!("HOME"), ".ssh", "config"].iter().collect();
+
+            let mut reader = BufReader::new(
+                File::open(ssh_config_location).expect("Could not open configuration file"),
+            );
+            let config = SshConfig::default()
+                .parse(&mut reader)
+                .expect("Failed to parse configuration");
+
+            // Query attributes for a certain host
+            config.query(&remote_host)
+        }
+    };
+    match get_ssh_session(param) {
+        Ok(x) => {
+            return Ok(x);
+        }
+        Err(_) => {
+            let user = get_user_by_uid(get_current_uid()).unwrap();
+            let h = HostParams {
+                bind_address: None,
+                bind_interface: None,
+                ca_signature_algorithms: None,
+                certificate_file: None,
+                ciphers: None,
+                compression: None,
+                connection_attempts: None,
+                connect_timeout: None,
+                host_key_algorithms: None,
+                host_name: Some(remote_host.to_owned()),
+                identity_file: None,
+                ignore_unknown: None,
+                kex_algorithms: None,
+                mac: None,
+                port: None,
+                pubkey_accepted_algorithms: None,
+                pubkey_authentication: None,
+                remote_forward: None,
+                server_alive_interval: None,
+                tcp_keep_alive: None,
+                user: Some(user.name().to_str().unwrap().to_owned()),
+            };
+            return get_ssh_session(h);
+        }
+    }
+}
+
+fn get_ssh_session(param: HostParams) -> Result<Session, Error> {
+    let tcp = TcpStream::connect(format!(
+        "{}:{}",
+        param.host_name.unwrap(),
+        param.port.unwrap_or(22)
+    ))
+    .unwrap();
+    let mut sess = Session::new().unwrap();
+    sess.set_tcp_stream(tcp);
+    sess.handshake()?;
+
+    // man ssh
+    let default_identity_list: Vec<PathBuf> = vec![
+        [env!("HOME"), ".ssh", "id_rsa"].iter().collect(),
+        [env!("HOME"), ".ssh", "id_ecdsa"].iter().collect(),
+        [env!("HOME"), ".ssh", "id_ecdsa_sk"].iter().collect(),
+        [env!("HOME"), ".ssh", "id_ed25519"].iter().collect(),
+        [env!("HOME"), ".ssh", "id_ed25519_sk"].iter().collect(),
+        [env!("HOME"), ".ssh", "id_dsa"].iter().collect(),
+    ];
+    let v: Vec<PathBuf> = match param.identity_file {
+        Some(mut identity_file) => {
+            identity_file.extend(default_identity_list);
+            identity_file
+        }
+        None => default_identity_list,
+    };
+
+    for identity_file in &v {
+        match sess.userauth_pubkey_file(&param.user.clone().unwrap(), None, &identity_file, None) {
+            Ok(_) => {
+                if sess.authenticated() {
+                    break;
+                }
+            }
+            Err(_) => {}
+        }
+    }
+
+    if !sess.authenticated() {
+        panic!("authenticated failed")
+    }
+    Ok(sess)
 }
