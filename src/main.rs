@@ -298,9 +298,8 @@ fn upload_file(sess: &mut Session, local_path: &Path, remote_path: &Path) -> Res
     let mut file = File::open(local_path).unwrap();
     // let permissions = file.metadata().unwrap().permissions();
 
-    let mut remote_file = sess
-        .scp_send(&remote_path, 0o644, file.metadata().unwrap().len(), None)
-        .unwrap();
+    let mut remote_file =
+        sess.scp_send(&remote_path, 0o644, file.metadata().unwrap().len(), None)?;
 
     let mut v = vec![];
     file.read_to_end(&mut v).unwrap();
