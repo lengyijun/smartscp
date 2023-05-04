@@ -210,8 +210,8 @@ fn upload(mut c: Connection, mut sess: Session, sftp: Sftp) -> Result<(), Error>
     println!("upload {:?} ", c);
     let remote_dir_filestat = sftp.stat(&c.remote_path);
 
-    {
-        let mut v: Vec<_> = c.remote_path.ancestors().collect();
+    if remote_dir_filestat.is_err() {
+        let mut v: Vec<_> = c.remote_path.ancestors().skip(1).collect();
         v.reverse();
         for p in v {
             let _ = sftp.mkdir(p, 0o776);
@@ -227,7 +227,9 @@ fn upload(mut c: Connection, mut sess: Session, sftp: Sftp) -> Result<(), Error>
                 c.remote_path.push(c.local_path.file_name().unwrap());
                 let _ = sftp.mkdir(&c.remote_path, 0o776);
             }
-            Err(_) => {}
+            Err(_) => {
+                let _ = sftp.mkdir(&c.remote_path, 0o776);
+            }
         }
 
         let walker = WalkDir::new(&c.local_path).into_iter();
