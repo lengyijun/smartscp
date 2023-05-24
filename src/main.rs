@@ -124,8 +124,10 @@ fn download(mut c: Connection, mut sess: Session, sftp: Sftp) -> Result<(), Erro
     let remote_dir_filestat = sftp.stat(&c.remote_path).expect("can't access remote file");
 
     if remote_dir_filestat.is_dir() {
-        if c.local_path.is_dir() {
-            c.local_path.push(&c.remote_path.file_name().unwrap());
+        if !c.local_path.exists() || c.local_path.is_dir() {
+            if c.local_path.exists() {
+                c.local_path.push(&c.remote_path.file_name().unwrap());
+            }
             download_dir(&c, &mut sess, &sftp, &c.remote_path, None)
         } else {
             panic!("remote dir, local not dir");
