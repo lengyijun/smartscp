@@ -10,6 +10,7 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::io::BufReader;
 use std::net::TcpStream;
+use std::os::unix::prelude::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -265,10 +266,14 @@ fn upload(mut c: Connection, mut sess: Session, sftp: Sftp) -> Result<(), Error>
 fn upload_file(sess: &mut Session, local_path: &Path, remote_path: &Path) -> Result<(), Error> {
     println!("{:?}", local_path.file_name().unwrap());
     let mut file = File::open(local_path).unwrap();
-    // let permissions = file.metadata().unwrap().permissions();
+    let permissions = file.metadata().unwrap().permissions().mode();
 
-    let mut remote_file =
-        sess.scp_send(&remote_path, 0o644, file.metadata().unwrap().len(), None)?;
+    let mut remote_file = sess.scp_send(
+        &remote_path,
+        (permissions & 0o777).try_into().unwrap(),
+        file.metadata().unwrap().len(),
+        None,
+    )?;
 
     let mut v = vec![];
     file.read_to_end(&mut v).unwrap();
