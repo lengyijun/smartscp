@@ -1,6 +1,8 @@
 # Smartscp
 
-A wrapper of scp, auto skip git-ignored files
+A replacement of scp, but auto skip git-ignored files
+
+Based on sftp
 
 ## Usage
 ```
@@ -27,8 +29,8 @@ smartscp ~/.local/share remote_host
 2. filename contains ":"
 
 ## Notice
-not compatible with scp
-not a replacement of scp
+Not compatible with scp
+Not compatible with the same parameters as SCP
 
 ## Q&A
 ### Q: why not use `rsync --exclude=`
@@ -36,4 +38,7 @@ A: rsync doesn't support complicated exclude rules
 
 ### Q: why not rewrite scp from bottom up ?
 A: It's not a trival work
+
+## Reference
+[Why scp is bad and difference between scp and sftp](https://goteleport.com/blog/scp-familiar-simple-insecure-slow/#alternatives-to-scp)
 
