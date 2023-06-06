@@ -1,21 +1,26 @@
+use async_recursion::async_recursion;
+use bytes::BytesMut;
+use futures_util::future::join_all;
+use futures_util::StreamExt;
+use openssh::{KnownHosts, Session};
+use openssh_sftp_client::Error;
+use openssh_sftp_client::{Sftp, SftpOptions};
 use pathdiff::diff_paths;
-use ssh2::Error;
-use ssh2::Session;
-use ssh2::Sftp;
 use ssh2_config::HostParams;
 use ssh2_config::SshConfig;
 use std::collections::HashSet;
 use std::env;
-use std::fs::File;
-use std::io::prelude::*;
+use std::future::ready;
 use std::io::BufReader;
-use std::net::TcpStream;
 use std::os::unix::prelude::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
 use users::{get_current_uid, get_user_by_uid};
-use walkdir::WalkDir;
+use walkdir::{DirEntry, WalkDir};
 
 #[derive(Debug)]
 struct Connection {
@@ -25,7 +30,7 @@ struct Connection {
 }
 
 impl Connection {
-    fn new(remote_path: Option<&str>, local_path: &str, remote_home: String) -> Self {
+    fn new(remote_path: Option<&str>, local_path: &str, remote_home: PathBuf) -> Self {
         let mut local_path_pf = match shellexpand::full(local_path) {
             Ok(x) => PathBuf::from(x.as_ref()),
             Err(_) => panic!("not a valid local path"),
@@ -70,15 +75,16 @@ enum Direction {
     Download,
 }
 
-fn main() -> Result<(), Error> {
+#[tokio::main]
+async fn main() -> Result<(), Error> {
     let mut arg_iter = env::args().skip(1);
     let arg1: String = arg_iter.next().unwrap();
     let arg2: String = arg_iter.next().unwrap();
     if arg_iter.next().is_some() {
         panic!("expect 2 arguments, meet more than 2");
     }
-    let arg1_split = arg1.split_once(":");
-    let arg2_split = arg2.split_once(":");
+    let arg1_split = arg1.split_once(':');
+    let arg2_split = arg2.split_once(':');
 
     let (remote_host, remote_path, local_path, direction) = match (arg1_split, arg2_split) {
         (None, None) => {
@@ -111,64 +117,87 @@ fn main() -> Result<(), Error> {
         }
     };
 
-    let mut sess = get_remote_host(&remote_host)?;
+    let sess = get_remote_host(&remote_host).await.unwrap();
 
-    let remote_home_path = get_remote_home(&mut sess)?;
-    let sftp = sess.sftp()?;
+    let sftp = Sftp::from_session(sess, SftpOptions::new()).await.unwrap();
+    let remote_home_path = PathBuf::from("~");
 
-    let connection = Connection::new(remote_path, &local_path, remote_home_path);
+    let mut connection = Connection::new(remote_path, &local_path, remote_home_path);
+    connection.remote_path = sftp
+        .fs()
+        .canonicalize(connection.remote_path)
+        .await
+        .unwrap();
 
     match direction {
-        Direction::Upload => upload(connection, sess, sftp),
-        Direction::Download => download(connection, sess, sftp),
+        Direction::Upload => {
+            let _ = upload(connection, &sftp).await;
+            sftp.open("/tmp").await.unwrap().sync_all().await
+        }
+        Direction::Download => {
+            let sess = get_remote_host(&remote_host).await.unwrap();
+            let _ = download(connection, sess, sftp).await;
+            File::open("/tmp").await.unwrap().sync_all().await.unwrap();
+            Ok(())
+        }
     }
 }
 
-fn download(mut c: Connection, mut sess: Session, sftp: Sftp) -> Result<(), Error> {
-    let remote_dir_filestat = sftp.stat(&c.remote_path).expect("can't access remote file");
+async fn download(mut c: Connection, mut sess: Session, sftp: Sftp) -> Result<(), Error> {
+    let remote_dir_filestat = sftp
+        .open(&c.remote_path)
+        .await
+        .unwrap()
+        .metadata()
+        .await
+        .unwrap()
+        .file_type()
+        .unwrap();
 
     if remote_dir_filestat.is_dir() {
         if !c.local_path.exists() || c.local_path.is_dir() {
             if c.local_path.exists() {
-                c.local_path.push(&c.remote_path.file_name().unwrap());
+                c.local_path.push(c.remote_path.file_name().unwrap());
             }
-            download_dir(&c, &mut sess, &sftp, &c.remote_path, None)
+            download_dir(&c, &mut sess, &sftp, c.remote_path.clone(), None).await
         } else {
             panic!("remote dir, local not dir");
         }
     } else {
         if c.local_path.is_dir() {
-            c.local_path.push(&c.remote_path.file_name().unwrap());
+            c.local_path.push(c.remote_path.file_name().unwrap());
         }
-        download_file(&mut sess, &c.local_path, &c.remote_path)
+        download_file(&sftp, c.local_path.clone(), c.remote_path.clone()).await
     }
 }
 
-fn download_dir(
+#[async_recursion]
+async fn download_dir(
     c: &Connection,
     sess: &mut Session,
     sftp: &Sftp,
-    remote_dir: &Path,
+    remote_dir: PathBuf,
     blacklist: Option<HashSet<PathBuf>>,
 ) -> Result<(), Error> {
     // mkdir locally
     let mut local_dir = PathBuf::from(&c.local_path);
-    local_dir.push(diff_paths(remote_dir, &c.remote_path).unwrap());
+    local_dir.push(diff_paths(&remote_dir, &c.remote_path).unwrap());
 
     let _ = std::fs::create_dir_all(&local_dir);
 
     let blacklist = match blacklist {
         Some(x) => x,
         None => {
-            let mut ignored_or_untracked = get_ignored_and_untracked(sess, remote_dir)?;
-            let untracked: Vec<String> = get_untracked(sess, remote_dir)?;
+            let mut ignored_or_untracked =
+                get_ignored_and_untracked(sess, &remote_dir).await.unwrap();
+            let untracked: Vec<String> = get_untracked(sess, &remote_dir).await.unwrap();
             untracked.into_iter().for_each(|x| {
                 ignored_or_untracked.remove(&x);
             });
             ignored_or_untracked
                 .into_iter()
                 .map(|x| {
-                    let mut pf = PathBuf::from(remote_dir);
+                    let mut pf = PathBuf::from(&remote_dir);
                     pf.push(x);
                     pf
                 })
@@ -176,118 +205,147 @@ fn download_dir(
         }
     };
 
-    match sftp.readdir(remote_dir) {
-        Ok(v) => {
-            for (remote_pf, filestat) in v {
-                if filestat.is_dir() {
-                    download_dir(c, sess, &sftp, &remote_pf, Some(blacklist.clone()))?;
-                } else {
-                    if !blacklist.contains(&remote_pf) {
-                        let mut local_path = local_dir.clone();
-                        local_path.push(remote_pf.file_name().unwrap());
-                        download_file(sess, &local_path, &remote_pf)?;
-                    }
-                }
+    let mut v1 = vec![];
+    let mut v2 = vec![];
+    sftp.fs()
+        .open_dir(&remote_dir)
+        .await
+        .unwrap()
+        .read_dir()
+        .for_each(|res| {
+            let entry = res.unwrap();
+            let filename = entry.filename().as_os_str();
+
+            if filename == "." || filename == ".." {
+                return ready(());
             }
-        }
-        Err(_) => unreachable!(),
+            let mut remote_pf = PathBuf::from(&remote_dir);
+            remote_pf.push(entry.filename());
+
+            if entry.file_type().unwrap().is_dir() {
+                v1.push(remote_pf);
+            } else if !blacklist.contains(&remote_pf) {
+                let mut local_path = local_dir.clone();
+                local_path.push(remote_pf.file_name().unwrap());
+                v2.push(download_file(sftp, local_path.clone(), remote_pf.clone()));
+            }
+            ready(())
+        })
+        .await;
+
+    for remote_pf in v1.into_iter() {
+        let _ = download_dir(c, sess, sftp, remote_pf.clone(), Some(blacklist.clone())).await;
     }
+    join_all(v2).await;
+
     Ok(())
 }
 
-fn download_file(sess: &mut Session, local_path: &Path, remote_path: &Path) -> Result<(), Error> {
+async fn download_file(
+    sftp: &Sftp,
+    local_path: PathBuf,
+    remote_path: PathBuf,
+) -> Result<(), Error> {
     println!("{:?}", remote_path.file_name().unwrap());
-    let (mut remote_file, _stat) = sess.scp_recv(remote_path).unwrap();
-    let mut contents = Vec::new();
-    remote_file.read_to_end(&mut contents).unwrap();
+    let mut remote_file = sftp.open(remote_path).await.unwrap();
+    let len: u64 = remote_file.metadata().await.unwrap().len().unwrap();
 
-    // Close the channel and wait for the whole content to be tranferred
-    remote_file.send_eof()?;
-    remote_file.wait_eof()?;
-    remote_file.close()?;
-    remote_file.wait_close()?;
+    let contents = remote_file
+        .read_all(len as usize, BytesMut::new())
+        .await
+        .unwrap();
 
-    let mut local_file = File::create(local_path).unwrap();
-    local_file.write(&contents).unwrap();
+    let mut local_file = File::create(local_path).await.unwrap();
+    local_file.write_all(&contents).await.unwrap();
     Ok(())
 }
 
-fn upload(mut c: Connection, mut sess: Session, sftp: Sftp) -> Result<(), Error> {
+async fn upload(mut c: Connection, sftp: &Sftp) -> Result<(), Error> {
     println!("upload {:?} ", c);
-    let remote_dir_filestat = sftp.stat(&c.remote_path);
+    let remote_dir_filestat = sftp
+        .open(&c.remote_path)
+        .await
+        .unwrap()
+        .metadata()
+        .await
+        .map(|x| x.file_type());
 
     if remote_dir_filestat.is_err() {
         let mut v: Vec<_> = c.remote_path.ancestors().skip(1).collect();
         v.reverse();
         for p in v {
-            let _ = sftp.mkdir(p, 0o776);
+            sftp.fs().create_dir(p).await.unwrap();
         }
     }
 
     if c.local_path.is_dir() {
         match remote_dir_filestat {
-            Ok(stat) => {
+            Ok(Some(stat)) => {
                 if !stat.is_dir() {
                     panic!("remote path is not a dir");
                 }
                 c.remote_path.push(c.local_path.file_name().unwrap());
-                let _ = sftp.mkdir(&c.remote_path, 0o776);
+                let _ = sftp.fs().create_dir(&c.remote_path).await;
             }
-            Err(_) => {
-                let _ = sftp.mkdir(&c.remote_path, 0o776);
+            _ => {
+                sftp.fs().create_dir(&c.remote_path).await.unwrap();
             }
         }
 
         let walker = WalkDir::new(&c.local_path).into_iter();
+        let mut v = vec![];
         for entry in walker {
             let entry = entry.unwrap();
-            if entry.path().is_dir() {
-                // ignore mkdir error
-                let _ = sftp.mkdir(&c.calculate_remote_path(entry.path()), 0o776);
-            } else {
-                if !is_gitignore_local(entry.path()) {
-                    let remote_path = c.calculate_remote_path(entry.path());
-                    upload_file(&mut sess, entry.path(), &remote_path)?;
-                }
-            }
+            v.push(upload_worker(&c, sftp, entry));
         }
+        join_all(v).await;
     } else {
         match remote_dir_filestat {
-            Ok(stat) => {
+            Ok(Some(stat)) => {
                 if stat.is_dir() {
                     c.remote_path.push(c.local_path.file_name().unwrap());
                 } else {
                 }
             }
-            Err(_) => {}
+            _ => {}
         }
-        upload_file(&mut sess, &c.local_path, &c.remote_path)?;
+        upload_file(sftp, &c.local_path, &c.remote_path)
+            .await
+            .unwrap();
     }
     Ok(())
 }
 
-fn upload_file(sess: &mut Session, local_path: &Path, remote_path: &Path) -> Result<(), Error> {
-    println!("{:?}", local_path.file_name().unwrap());
-    let mut file = File::open(local_path).unwrap();
-    let permissions = file.metadata().unwrap().permissions().mode();
+async fn upload_worker(c: &Connection, sftp: &Sftp, entry: DirEntry) {
+    if entry.path().is_dir() {
+        // ignore mkdir error
+        let _ = sftp
+            .fs()
+            .create_dir(&c.calculate_remote_path(entry.path()))
+            .await;
+    } else if !is_gitignore_local(entry.path()) {
+        let remote_path = c.calculate_remote_path(entry.path());
+        upload_file(sftp, entry.path(), &remote_path).await.unwrap();
+    }
+}
 
-    let mut remote_file = sess.scp_send(
-        &remote_path,
-        (permissions & 0o777).try_into().unwrap(),
-        file.metadata().unwrap().len(),
-        None,
-    )?;
+async fn upload_file(sftp: &Sftp, local_path: &Path, remote_path: &Path) -> Result<(), Error> {
+    println!("{:?}", local_path.file_name().unwrap());
+    let mut file = File::open(local_path).await.unwrap();
+    let _permissions = file.metadata().await.unwrap().permissions().mode();
 
     let mut v = vec![];
-    file.read_to_end(&mut v).unwrap();
+    file.read_to_end(&mut v).await.unwrap();
 
-    remote_file.write_all(&v).unwrap();
-    remote_file.flush().unwrap();
-    // Close the channel and wait for the whole content to be transferred
-    remote_file.send_eof()?;
-    remote_file.wait_eof()?;
-    remote_file.close()?;
-    remote_file.wait_close()?;
+    sftp.options()
+        .create(true)
+        .write(true)
+        .open(&remote_path)
+        .await
+        .unwrap()
+        .write_all(&v)
+        .await
+        .unwrap();
     Ok(())
 }
 
@@ -305,50 +363,48 @@ fn is_gitignore_local(p: &Path) -> bool {
     !output.stdout.is_empty()
 }
 
-fn get_ignored_and_untracked(sess: &mut Session, dir: &Path) -> Result<HashSet<String>, Error> {
-    let mut channel = sess.channel_session()?;
-    channel.exec(&format!("cd {} && git ls-files --others -z", dir.display(),))?;
-    let mut s = String::new();
-    channel.read_to_string(&mut s).unwrap();
-    channel.close()?;
-    channel.wait_close()?;
+async fn get_ignored_and_untracked(
+    sess: &mut Session,
+    dir: &Path,
+) -> Result<HashSet<String>, Error> {
+    let ls = sess
+        .command("sh")
+        .arg("-c")
+        .arg(&format!("cd {} && git ls-files --others -z", dir.display()))
+        .output()
+        .await
+        .unwrap();
+    let s = String::from_utf8(ls.stdout).expect("server output was not valid UTF-8");
     let x: HashSet<_> = s
         .split(|x| x == '\0')
         .map(|x| x.to_owned())
-        .filter(|x| x.len() != 0)
+        .filter(|x| !x.is_empty())
         .collect();
     Ok(x)
 }
 
-fn get_untracked(sess: &mut Session, dir: &Path) -> Result<Vec<String>, Error> {
-    let mut channel = sess.channel_session()?;
-    channel.exec(&format!(
-        "cd {} && git ls-files --others --exclude-standard -z",
-        dir.display(),
-    ))?;
-    let mut s = String::new();
-    channel.read_to_string(&mut s).unwrap();
-    channel.close()?;
-    channel.wait_close()?;
+async fn get_untracked(sess: &mut Session, dir: &Path) -> Result<Vec<String>, Error> {
+    let ls = sess
+        .command("sh")
+        .arg("-c")
+        .arg(&format!(
+            "cd {} && git ls-files --others --exclude-standard -z",
+            dir.display(),
+        ))
+        .output()
+        .await
+        .unwrap();
+
+    let s = String::from_utf8(ls.stdout).expect("server output was not valid UTF-8");
     let x: Vec<_> = s
         .split(|x| x == '\0')
         .map(|x| x.to_owned())
-        .filter(|x| x.len() != 0)
+        .filter(|x| !x.is_empty())
         .collect();
     Ok(x)
 }
 
-fn get_remote_home(sess: &mut Session) -> Result<String, Error> {
-    let mut channel = sess.channel_session()?;
-    channel.exec("echo -n $HOME")?;
-    let mut s = String::new();
-    channel.read_to_string(&mut s).unwrap();
-    channel.close()?;
-    channel.wait_close()?;
-    Ok(s)
-}
-
-fn get_remote_host(remote_host: &str) -> Result<Session, Error> {
+async fn get_remote_host(remote_host: &str) -> Option<Session> {
     let param = match remote_host.split_once(|x| x == '@') {
         Some((user_name, ip)) => HostParams {
             bind_address: None,
@@ -377,20 +433,19 @@ fn get_remote_host(remote_host: &str) -> Result<Session, Error> {
             let ssh_config_location: PathBuf = [env!("HOME"), ".ssh", "config"].iter().collect();
 
             let mut reader = BufReader::new(
-                File::open(ssh_config_location).expect("Could not open configuration file"),
+                std::fs::File::open(ssh_config_location)
+                    .expect("Could not open configuration file"),
             );
             let config = SshConfig::default()
                 .parse(&mut reader)
                 .expect("Failed to parse configuration");
 
             // Query attributes for a certain host
-            config.query(&remote_host)
+            config.query(remote_host)
         }
     };
-    match get_ssh_session(param) {
-        Ok(x) => {
-            return Ok(x);
-        }
+    match get_ssh_session(param).await {
+        Ok(x) => Some(x),
         Err(_) => {
             let user = get_user_by_uid(get_current_uid()).unwrap();
             let h = HostParams {
@@ -416,52 +471,23 @@ fn get_remote_host(remote_host: &str) -> Result<Session, Error> {
                 tcp_keep_alive: None,
                 user: Some(user.name().to_str().unwrap().to_owned()),
             };
-            return get_ssh_session(h);
+            match get_ssh_session(h).await {
+                Ok(x) => Some(x),
+                Err(_) => None,
+            }
         }
     }
 }
 
-fn get_ssh_session(param: HostParams) -> Result<Session, Error> {
-    let tcp = TcpStream::connect(format!(
-        "{}:{}",
-        param.host_name.unwrap(),
-        param.port.unwrap_or(22)
-    ))
-    .unwrap();
-    let mut sess = Session::new().unwrap();
-    sess.set_tcp_stream(tcp);
-    sess.handshake()?;
-
-    // man ssh
-    let default_identity_list: Vec<PathBuf> = vec![
-        [env!("HOME"), ".ssh", "id_rsa"].iter().collect(),
-        [env!("HOME"), ".ssh", "id_ecdsa"].iter().collect(),
-        [env!("HOME"), ".ssh", "id_ecdsa_sk"].iter().collect(),
-        [env!("HOME"), ".ssh", "id_ed25519"].iter().collect(),
-        [env!("HOME"), ".ssh", "id_ed25519_sk"].iter().collect(),
-        [env!("HOME"), ".ssh", "id_dsa"].iter().collect(),
-    ];
-    let v: Vec<PathBuf> = match param.identity_file {
-        Some(mut identity_file) => {
-            identity_file.extend(default_identity_list);
-            identity_file
-        }
-        None => default_identity_list,
-    };
-
-    for identity_file in &v {
-        match sess.userauth_pubkey_file(&param.user.clone().unwrap(), None, &identity_file, None) {
-            Ok(_) => {
-                if sess.authenticated() {
-                    break;
-                }
-            }
-            Err(_) => {}
-        }
-    }
-
-    if !sess.authenticated() {
-        panic!("authenticated failed")
-    }
-    Ok(sess)
+async fn get_ssh_session(param: HostParams) -> Result<Session, openssh::Error> {
+    Session::connect_mux(
+        format!(
+            "ssh://{}@{}:{}",
+            param.user.unwrap(),
+            param.host_name.unwrap(),
+            param.port.unwrap_or(22)
+        ),
+        KnownHosts::Strict,
+    )
+    .await
 }
