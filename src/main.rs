@@ -307,7 +307,7 @@ fn is_gitignore_local(p: &Path) -> bool {
 
 fn get_ignored_and_untracked(sess: &mut Session, dir: &Path) -> Result<HashSet<String>, Error> {
     let mut channel = sess.channel_session()?;
-    channel.exec(&format!("cd {}; git ls-files --others -z", dir.display(),))?;
+    channel.exec(&format!("cd {} && git ls-files --others -z", dir.display(),))?;
     let mut s = String::new();
     channel.read_to_string(&mut s).unwrap();
     channel.close()?;
@@ -323,7 +323,7 @@ fn get_ignored_and_untracked(sess: &mut Session, dir: &Path) -> Result<HashSet<S
 fn get_untracked(sess: &mut Session, dir: &Path) -> Result<Vec<String>, Error> {
     let mut channel = sess.channel_session()?;
     channel.exec(&format!(
-        "cd {}; git ls-files --others --exclude-standard -z",
+        "cd {} && git ls-files --others --exclude-standard -z",
         dir.display(),
     ))?;
     let mut s = String::new();
