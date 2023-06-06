@@ -74,6 +74,9 @@ fn main() -> Result<(), Error> {
     let mut arg_iter = env::args().skip(1);
     let arg1: String = arg_iter.next().unwrap();
     let arg2: String = arg_iter.next().unwrap();
+    if arg_iter.next().is_some() {
+        panic!("expect 2 arguments, meet more than 2");
+    }
     let arg1_split = arg1.split_once(":");
     let arg2_split = arg2.split_once(":");
 
