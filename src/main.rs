@@ -3,6 +3,7 @@ use bytes::BytesMut;
 use futures_util::future::join_all;
 use futures_util::StreamExt;
 use openssh::{KnownHosts, Session};
+use openssh_sftp_client::metadata::Permissions;
 use openssh_sftp_client::Error;
 use openssh_sftp_client::{Sftp, SftpOptions};
 use pathdiff::diff_paths;
@@ -332,20 +333,35 @@ async fn upload_worker(c: &Connection, sftp: &Sftp, entry: DirEntry) {
 async fn upload_file(sftp: &Sftp, local_path: &Path, remote_path: &Path) -> Result<(), Error> {
     println!("{:?}", local_path.file_name().unwrap());
     let mut file = File::open(local_path).await.unwrap();
-    let _permissions = file.metadata().await.unwrap().permissions().mode();
+    let permissions = file.metadata().await.unwrap().permissions().mode() & 0o777;
 
     let mut v = vec![];
     file.read_to_end(&mut v).await.unwrap();
 
-    sftp.options()
+    let mut f = sftp
+        .options()
         .create(true)
         .write(true)
         .open(&remote_path)
         .await
-        .unwrap()
-        .write_all(&v)
-        .await
         .unwrap();
+    let mut perm = Permissions::new();
+
+    perm.set_read_by_owner((permissions & 0b100_000_000) != 0);
+    perm.set_write_by_owner((permissions & 0b010_000_000) != 0);
+    perm.set_execute_by_owner((permissions & 0b001_000_000) != 0);
+
+    perm.set_read_by_group((permissions & 0b000_100_000) != 0);
+    perm.set_write_by_group((permissions & 0b000_010_000) != 0);
+    perm.set_execute_by_group((permissions & 0b000_001_000) != 0);
+
+    perm.set_read_by_other((permissions & 0b000_000_100) != 0);
+    perm.set_write_by_other((permissions & 0b000_000_010) != 0);
+    perm.set_execute_by_other((permissions & 0b000_000_001) != 0);
+
+    f.set_permissions(perm).await.unwrap();
+
+    f.write_all(&v).await.unwrap();
     Ok(())
 }
 
