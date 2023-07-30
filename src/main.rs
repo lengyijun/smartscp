@@ -286,7 +286,7 @@ async fn upload(mut c: Connection, sftp: &Sftp) -> Result<(), Error> {
                 c.remote_path.push(c.local_path.file_name().unwrap());
                 // needless to create_dir here
                 // we will create_dir in walker
-                // let _ = sftp.fs().create_dir(&c.remote_path).await; 
+                // let _ = sftp.fs().create_dir(&c.remote_path).await;
             }
             _ => {
                 sftp.fs().create_dir(&c.remote_path).await.unwrap();
@@ -324,9 +324,11 @@ async fn upload(mut c: Connection, sftp: &Sftp) -> Result<(), Error> {
 
 async fn upload_worker(c: &Connection, sftp: &Sftp, entry: DirEntry) -> Result<(), Error> {
     if entry.path().is_dir() {
-        sftp.fs()
+        let _ = sftp
+            .fs()
             .create_dir(&c.calculate_remote_path(entry.path()))
-            .await
+            .await;
+        Ok(())
     } else if !is_gitignore_local(entry.path()) {
         let remote_path = c.calculate_remote_path(entry.path());
         upload_file(sftp, entry.path(), &remote_path).await
