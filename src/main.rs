@@ -354,9 +354,11 @@ async fn upload_file(sftp: &Sftp, local_path: &Path, remote_path: &Path) -> Resu
     perm.set_write_by_other((permissions & 0b000_000_010) != 0);
     perm.set_execute_by_other((permissions & 0b000_000_001) != 0);
 
-    f.set_permissions(perm).await?;
+    // write first, then set permission
+    // permission maybe readonly
+    f.write_all(&v).await?;
 
-    f.write_all(&v).await
+    f.set_permissions(perm).await
 }
 
 fn is_gitignore_local(p: &Path) -> bool {
