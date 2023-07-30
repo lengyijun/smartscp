@@ -406,8 +406,8 @@ async fn get_untracked(sess: &mut Session, dir: &Path) -> Result<Vec<String>, Er
     let s = String::from_utf8(ls.stdout).expect("server output was not valid UTF-8");
     let x: Vec<_> = s
         .split(|x| x == '\0')
-        .map(|x| x.to_owned())
         .filter(|x| !x.is_empty())
+        .map(|x| x.to_owned())
         .collect();
     Ok(x)
 }
