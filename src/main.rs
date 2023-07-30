@@ -297,7 +297,14 @@ async fn upload(mut c: Connection, sftp: &Sftp) -> Result<(), Error> {
             let entry = entry.unwrap();
             v.push(upload_worker(&c, sftp, entry));
         }
-        join_all(v).await;
+        for x in join_all(v).await.into_iter() {
+            match x {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("{:?}", e);
+                }
+            }
+        }
     } else {
         match remote_dir_filestat {
             Ok(Some(stat)) => {
