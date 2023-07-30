@@ -133,7 +133,8 @@ async fn main() -> Result<(), Error> {
     match direction {
         Direction::Upload => {
             let _ = upload(connection, &sftp).await;
-            sftp.open("/tmp").await.unwrap().sync_all().await
+            let _ = sftp.open("/tmp").await.unwrap().sync_all().await;
+            Ok(())
         }
         Direction::Download => {
             let sess = get_remote_host(&remote_host).await.unwrap();
@@ -248,13 +249,10 @@ async fn download_file(
     remote_path: PathBuf,
 ) -> Result<(), Error> {
     println!("{:?}", remote_path.file_name().unwrap());
-    let mut remote_file = sftp.open(remote_path).await.unwrap();
-    let len: u64 = remote_file.metadata().await.unwrap().len().unwrap();
+    let mut remote_file = sftp.open(remote_path).await?;
+    let len: u64 = remote_file.metadata().await?.len().unwrap();
 
-    let contents = remote_file
-        .read_all(len as usize, BytesMut::new())
-        .await
-        .unwrap();
+    let contents = remote_file.read_all(len as usize, BytesMut::new()).await?;
 
     let mut local_file = File::create(local_path).await.unwrap();
     local_file.write_all(&contents).await.unwrap();
@@ -310,23 +308,21 @@ async fn upload(mut c: Connection, sftp: &Sftp) -> Result<(), Error> {
             }
             _ => {}
         }
-        upload_file(sftp, &c.local_path, &c.remote_path)
-            .await
-            .unwrap();
+        upload_file(sftp, &c.local_path, &c.remote_path).await?
     }
     Ok(())
 }
 
-async fn upload_worker(c: &Connection, sftp: &Sftp, entry: DirEntry) {
+async fn upload_worker(c: &Connection, sftp: &Sftp, entry: DirEntry) -> Result<(), Error> {
     if entry.path().is_dir() {
-        // ignore mkdir error
-        let _ = sftp
-            .fs()
+        sftp.fs()
             .create_dir(&c.calculate_remote_path(entry.path()))
-            .await;
+            .await
     } else if !is_gitignore_local(entry.path()) {
         let remote_path = c.calculate_remote_path(entry.path());
-        upload_file(sftp, entry.path(), &remote_path).await.unwrap();
+        upload_file(sftp, entry.path(), &remote_path).await
+    } else {
+        Ok(())
     }
 }
 
@@ -343,8 +339,7 @@ async fn upload_file(sftp: &Sftp, local_path: &Path, remote_path: &Path) -> Resu
         .create(true)
         .write(true)
         .open(&remote_path)
-        .await
-        .unwrap();
+        .await?;
     let mut perm = Permissions::new();
 
     perm.set_read_by_owner((permissions & 0b100_000_000) != 0);
@@ -359,10 +354,9 @@ async fn upload_file(sftp: &Sftp, local_path: &Path, remote_path: &Path) -> Resu
     perm.set_write_by_other((permissions & 0b000_000_010) != 0);
     perm.set_execute_by_other((permissions & 0b000_000_001) != 0);
 
-    f.set_permissions(perm).await.unwrap();
+    f.set_permissions(perm).await?;
 
-    f.write_all(&v).await.unwrap();
-    Ok(())
+    f.write_all(&v).await
 }
 
 fn is_gitignore_local(p: &Path) -> bool {
@@ -388,8 +382,7 @@ async fn get_ignored_and_untracked(
         .arg("-c")
         .arg(&format!("cd {} && git ls-files --others -z", dir.display()))
         .output()
-        .await
-        .unwrap();
+        .await?;
     let s = String::from_utf8(ls.stdout).expect("server output was not valid UTF-8");
     let x: HashSet<_> = s
         .split(|x| x == '\0')
@@ -408,8 +401,7 @@ async fn get_untracked(sess: &mut Session, dir: &Path) -> Result<Vec<String>, Er
             dir.display(),
         ))
         .output()
-        .await
-        .unwrap();
+        .await?;
 
     let s = String::from_utf8(ls.stdout).expect("server output was not valid UTF-8");
     let x: Vec<_> = s
@@ -420,7 +412,7 @@ async fn get_untracked(sess: &mut Session, dir: &Path) -> Result<Vec<String>, Er
     Ok(x)
 }
 
-async fn get_remote_host(remote_host: &str) -> Option<Session> {
+async fn get_remote_host(remote_host: &str) -> Result<Session, openssh::Error> {
     let param = match remote_host.split_once(|x| x == '@') {
         Some((user_name, ip)) => HostParams {
             bind_address: None,
@@ -461,7 +453,7 @@ async fn get_remote_host(remote_host: &str) -> Option<Session> {
         }
     };
     match get_ssh_session(param).await {
-        Ok(x) => Some(x),
+        Ok(x) => Ok(x),
         Err(_) => {
             let user = get_user_by_uid(get_current_uid()).unwrap();
             let h = HostParams {
@@ -487,10 +479,7 @@ async fn get_remote_host(remote_host: &str) -> Option<Session> {
                 tcp_keep_alive: None,
                 user: Some(user.name().to_str().unwrap().to_owned()),
             };
-            match get_ssh_session(h).await {
-                Ok(x) => Some(x),
-                Err(_) => None,
-            }
+            get_ssh_session(h).await
         }
     }
 }
