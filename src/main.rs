@@ -284,7 +284,9 @@ async fn upload(mut c: Connection, sftp: &Sftp) -> Result<(), Error> {
                     panic!("remote path is not a dir");
                 }
                 c.remote_path.push(c.local_path.file_name().unwrap());
-                let _ = sftp.fs().create_dir(&c.remote_path).await;
+                // needless to create_dir here
+                // we will create_dir in walker
+                // let _ = sftp.fs().create_dir(&c.remote_path).await; 
             }
             _ => {
                 sftp.fs().create_dir(&c.remote_path).await.unwrap();
