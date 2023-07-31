@@ -311,6 +311,7 @@ async fn upload(mut c: Connection, sftp: &Sftp) -> Result<(), Error> {
                 }
             }
         }
+        Ok(())
     } else {
         match remote_dir_filestat {
             Ok(Some(stat)) => {
@@ -323,9 +324,8 @@ async fn upload(mut c: Connection, sftp: &Sftp) -> Result<(), Error> {
         }
         upload_file(sftp, &c.local_path, &c.remote_path)
             .await
-            .map_err(|(e, _)| e)?
+            .map_err(|(e, _)| e)
     }
-    Ok(())
 }
 
 async fn upload_worker(
