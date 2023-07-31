@@ -1,7 +1,7 @@
 use async_recursion::async_recursion;
 use bytes::BytesMut;
-use futures_util::future::join_all;
-use futures_util::StreamExt;
+use futures::future::join_all;
+use futures::stream::{self, StreamExt};
 use openssh::{KnownHosts, Session};
 use openssh_sftp_client::metadata::Permissions;
 use openssh_sftp_client::Error;
@@ -299,7 +299,11 @@ async fn upload(mut c: Connection, sftp: &Sftp) -> Result<(), Error> {
             let entry = entry.unwrap();
             v.push(upload_worker(&c, sftp, entry));
         }
-        for x in join_all(v).await.into_iter() {
+
+        // send too fast will run out of fd
+        let stream = stream::iter(v).buffered(1024).collect::<Vec<_>>().await;
+
+        for x in stream.into_iter() {
             match x {
                 Ok(()) => {}
                 Err(e) => {
