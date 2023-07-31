@@ -317,12 +317,18 @@ async fn upload(mut c: Connection, sftp: &Sftp) -> Result<(), Error> {
             }
             _ => {}
         }
-        upload_file(sftp, &c.local_path, &c.remote_path).await?
+        upload_file(sftp, &c.local_path, &c.remote_path)
+            .await
+            .map_err(|(e, _)| e)?
     }
     Ok(())
 }
 
-async fn upload_worker(c: &Connection, sftp: &Sftp, entry: DirEntry) -> Result<(), Error> {
+async fn upload_worker(
+    c: &Connection,
+    sftp: &Sftp,
+    entry: DirEntry,
+) -> Result<(), (Error, PathBuf)> {
     if entry.path().is_dir() {
         let _ = sftp
             .fs()
@@ -337,7 +343,11 @@ async fn upload_worker(c: &Connection, sftp: &Sftp, entry: DirEntry) -> Result<(
     }
 }
 
-async fn upload_file(sftp: &Sftp, local_path: &Path, remote_path: &Path) -> Result<(), Error> {
+async fn upload_file(
+    sftp: &Sftp,
+    local_path: &Path,
+    remote_path: &Path,
+) -> Result<(), (Error, PathBuf)> {
     println!("{:?}", local_path.file_name().unwrap());
     let mut file = File::open(local_path).await.unwrap();
     let permissions = file.metadata().await.unwrap().permissions().mode() & 0o777;
@@ -350,7 +360,8 @@ async fn upload_file(sftp: &Sftp, local_path: &Path, remote_path: &Path) -> Resu
         .create(true)
         .write(true)
         .open(&remote_path)
-        .await?;
+        .await
+        .map_err(|e| (e, PathBuf::from(remote_path)))?;
     let mut perm = Permissions::new();
 
     perm.set_read_by_owner((permissions & 0b100_000_000) != 0);
@@ -367,9 +378,13 @@ async fn upload_file(sftp: &Sftp, local_path: &Path, remote_path: &Path) -> Resu
 
     // write first, then set permission
     // permission maybe readonly
-    f.write_all(&v).await?;
+    f.write_all(&v)
+        .await
+        .map_err(|e| (e, PathBuf::from(remote_path)))?;
 
-    f.set_permissions(perm).await
+    f.set_permissions(perm)
+        .await
+        .map_err(|e| (e, PathBuf::from(remote_path)))
 }
 
 fn is_gitignore_local(p: &Path) -> bool {
