@@ -418,8 +418,8 @@ async fn get_ignored_and_untracked(
     let s = String::from_utf8(ls.stdout).expect("server output was not valid UTF-8");
     let x: HashSet<_> = s
         .split(|x| x == '\0')
-        .map(|x| x.to_owned())
         .filter(|x| !x.is_empty())
+        .map(|x| x.to_owned())
         .collect();
     Ok(x)
 }
