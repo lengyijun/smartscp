@@ -7,8 +7,10 @@ use openssh_sftp_client::metadata::Permissions;
 use openssh_sftp_client::Error;
 use openssh_sftp_client::{Sftp, SftpOptions};
 use pathdiff::diff_paths;
+use rlimit::Resource;
 use ssh2_config::HostParams;
 use ssh2_config::SshConfig;
+use std::cmp;
 use std::collections::HashSet;
 use std::env;
 use std::future::ready;
@@ -301,7 +303,13 @@ async fn upload(mut c: Connection, sftp: &Sftp) -> Result<(), Error> {
         }
 
         // send too fast will run out of fd
-        let stream = stream::iter(v).buffered(1024).collect::<Vec<_>>().await;
+        let soft_limit = increase_nofile_limit()
+            .map_or_else(|_| 512, |n| n / 4)
+            .min(1024);
+        let stream = stream::iter(v)
+            .buffered(soft_limit as usize)
+            .collect::<Vec<_>>()
+            .await;
 
         for x in stream.into_iter() {
             match x {
@@ -527,4 +535,17 @@ async fn get_ssh_session(param: HostParams) -> Result<Session, openssh::Error> {
         KnownHosts::Strict,
     )
     .await
+}
+
+/// Try to increase NOFILE limit and return the current soft limit.
+pub fn increase_nofile_limit() -> std::io::Result<u64> {
+    const DEFAULT_NOFILE_LIMIT: u64 = 16384; // or another number
+
+    let (_soft, hard) = Resource::NOFILE.get()?;
+
+    let target = cmp::min(DEFAULT_NOFILE_LIMIT, hard);
+    Resource::NOFILE.set(target, hard)?;
+
+    let (soft, _hard) = Resource::NOFILE.get()?;
+    Ok(soft)
 }
