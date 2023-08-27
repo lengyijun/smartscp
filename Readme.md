@@ -28,6 +28,9 @@ smartscp ~/.local/share remote_host
 1. use password to authorize
 2. filename contains ":"
 
+## Drawback
+1. unnecessary mkdir
+
 ## Notice
 Not compatible with scp
 Not compatible with the same parameters as SCP
@@ -38,6 +41,11 @@ A: rsync doesn't support complicated exclude rules
 
 ### Q: why not rewrite scp from bottom up ?
 A: It's not a trival work
+
+### Q: why transfer failed ?
+A: 1. remote readonly files exists
+
+   2. fd limits reached, try `ulimit -n 50000`
 
 ## Reference
 [Why scp is bad and difference between scp and sftp](https://goteleport.com/blog/scp-familiar-simple-insecure-slow/#alternatives-to-scp)
