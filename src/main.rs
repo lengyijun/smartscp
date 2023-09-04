@@ -33,7 +33,7 @@ struct Connection {
 }
 
 impl Connection {
-    fn new(remote_path: Option<&str>, local_path: &str, remote_home: PathBuf) -> Self {
+    fn new(remote_path: Option<&str>, local_path: &str, remote_home: String) -> Self {
         let mut local_path_pf = match shellexpand::full(local_path) {
             Ok(x) => PathBuf::from(x.as_ref()),
             Err(_) => panic!("not a valid local path"),
@@ -44,10 +44,9 @@ impl Connection {
             local_path_pf = current_dir;
         }
         let remote_path_pf: PathBuf = match remote_path {
-            Some(x) => PathBuf::from(
-                shellexpand::tilde_with_context(&x, || Some(remote_home.to_string_lossy()))
-                    .as_ref(),
-            ),
+            Some(x) => {
+                PathBuf::from(shellexpand::tilde_with_context(&x, || Some(remote_home)).as_ref())
+            }
             None => {
                 let mut pf = PathBuf::from(&remote_home);
                 match diff_paths(&local_path_pf, env!("HOME")) {
@@ -120,12 +119,16 @@ async fn main() -> Result<(), Error> {
         }
     };
 
-    let sess = get_remote_host(&remote_host).await.unwrap();
+    let (host_params, sess) = get_remote_host(&remote_host).await.unwrap();
 
     let sftp = Sftp::from_session(sess, SftpOptions::new()).await.unwrap();
-    let remote_home_path = PathBuf::from("~");
 
-    let mut connection = Connection::new(remote_path, &local_path, remote_home_path);
+    let mut connection = Connection::new(
+        remote_path,
+        &local_path,
+        format!("/home/{}", host_params.user.unwrap()),
+    );
+
     connection.remote_path = sftp
         .fs()
         .canonicalize(connection.remote_path)
@@ -139,7 +142,7 @@ async fn main() -> Result<(), Error> {
             Ok(())
         }
         Direction::Download => {
-            let sess = get_remote_host(&remote_host).await.unwrap();
+            let (_, sess) = get_remote_host(&remote_host).await.unwrap();
             let _ = download(connection, sess, sftp).await;
             File::open("/tmp").await.unwrap().sync_all().await.unwrap();
             Ok(())
@@ -445,7 +448,7 @@ async fn get_untracked(sess: &mut Session, dir: &Path) -> Result<Vec<String>, Er
     Ok(x)
 }
 
-async fn get_remote_host(remote_host: &str) -> Result<Session, openssh::Error> {
+async fn get_remote_host(remote_host: &str) -> Result<(HostParams, Session), openssh::Error> {
     let param = match remote_host.split_once(|x| x == '@') {
         Some((user_name, ip)) => HostParams {
             bind_address: None,
@@ -486,8 +489,8 @@ async fn get_remote_host(remote_host: &str) -> Result<Session, openssh::Error> {
             config.query(remote_host)
         }
     };
-    match get_ssh_session(param).await {
-        Ok(x) => Ok(x),
+    match get_ssh_session(param.clone()).await {
+        Ok(session) => Ok((param, session)),
         Err(_) => {
             let user = get_user_by_uid(get_current_uid()).unwrap();
             let h = HostParams {
@@ -514,7 +517,7 @@ async fn get_remote_host(remote_host: &str) -> Result<Session, openssh::Error> {
                 user: Some(user.name().to_str().unwrap().to_owned()),
                 ignored_fields: HashMap::new(),
             };
-            get_ssh_session(h).await
+            get_ssh_session(h.clone()).await.map(|session| (h, session))
         }
     }
 }
