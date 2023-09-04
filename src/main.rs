@@ -318,14 +318,10 @@ async fn upload(mut c: Connection, sftp: &Sftp) -> Result<(), Error> {
         }
         Ok(())
     } else {
-        match remote_dir_filestat {
-            Ok(Some(stat)) => {
-                if stat.is_dir() {
-                    c.remote_path.push(c.local_path.file_name().unwrap());
-                } else {
-                }
+        if let Ok(Some(stat)) = remote_dir_filestat {
+            if stat.is_dir() {
+                c.remote_path.push(c.local_path.file_name().unwrap());
             }
-            _ => {}
         }
         upload_file(sftp, &c.local_path, &c.remote_path)
             .await
