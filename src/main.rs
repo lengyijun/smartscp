@@ -263,19 +263,16 @@ async fn download_file(
 
 async fn upload(mut c: Connection, sftp: &Sftp) -> Result<(), Error> {
     println!("upload {:?} ", c);
-    let remote_dir_filestat = sftp
-        .open(&c.remote_path)
-        .await
-        .unwrap()
-        .metadata()
-        .await
-        .map(|x| x.file_type());
+    let remote_dir_filestat = match sftp.open(&c.remote_path).await {
+        Ok(mut file) => file.metadata().await.map(|x| x.file_type()),
+        Err(e) => Err(e),
+    };
 
     if remote_dir_filestat.is_err() {
         let mut v: Vec<_> = c.remote_path.ancestors().skip(1).collect();
         v.reverse();
         for p in v {
-            sftp.fs().create_dir(p).await.unwrap();
+            let _ = sftp.fs().create_dir(p).await;
         }
     }
 
