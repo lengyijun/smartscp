@@ -8,10 +8,10 @@ use openssh_sftp_client::Error;
 use openssh_sftp_client::{Sftp, SftpOptions};
 use pathdiff::diff_paths;
 use rlimit::Resource;
-use ssh2_config::HostParams;
 use ssh2_config::SshConfig;
+use ssh2_config::{HostParams, ParseRule};
 use std::cmp;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::future::ready;
 use std::io::BufReader;
@@ -45,9 +45,9 @@ impl Connection {
         }
         let remote_path_pf: PathBuf = match remote_path {
             Some(x) => PathBuf::from(
-                shellexpand::tilde_with_context(&x, || Some(remote_home.clone())).as_ref(),
+                shellexpand::tilde_with_context(&x, || Some(remote_home.to_string_lossy()))
+                    .as_ref(),
             ),
-
             None => {
                 let mut pf = PathBuf::from(&remote_home);
                 match diff_paths(&local_path_pf, env!("HOME")) {
@@ -476,6 +476,7 @@ async fn get_remote_host(remote_host: &str) -> Result<Session, openssh::Error> {
             server_alive_interval: None,
             tcp_keep_alive: None,
             user: Some(user_name.to_owned()),
+            ignored_fields: HashMap::new(),
         },
         None => {
             let ssh_config_location: PathBuf = [env!("HOME"), ".ssh", "config"].iter().collect();
@@ -485,7 +486,7 @@ async fn get_remote_host(remote_host: &str) -> Result<Session, openssh::Error> {
                     .expect("Could not open configuration file"),
             );
             let config = SshConfig::default()
-                .parse(&mut reader)
+                .parse(&mut reader, ParseRule::ALLOW_UNKNOWN_FIELDS)
                 .expect("Failed to parse configuration");
 
             // Query attributes for a certain host
@@ -518,6 +519,7 @@ async fn get_remote_host(remote_host: &str) -> Result<Session, openssh::Error> {
                 server_alive_interval: None,
                 tcp_keep_alive: None,
                 user: Some(user.name().to_str().unwrap().to_owned()),
+                ignored_fields: HashMap::new(),
             };
             get_ssh_session(h).await
         }
