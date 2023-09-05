@@ -25,7 +25,7 @@ pub struct Connection {
 }
 
 impl Connection {
-    fn new(remote_path: Option<&str>, local_path: &str, remote_home: String) -> Self {
+    fn new(remote_path: Option<&str>, local_path: &str, remote_home: Option<String>) -> Self {
         let mut local_path_pf = match shellexpand::full(local_path) {
             Ok(x) => PathBuf::from(x.as_ref()),
             Err(_) => panic!("not a valid local path"),
@@ -36,11 +36,9 @@ impl Connection {
             local_path_pf = current_dir;
         }
         let remote_path_pf: PathBuf = match remote_path {
-            Some(x) => {
-                PathBuf::from(shellexpand::tilde_with_context(&x, || Some(remote_home)).as_ref())
-            }
+            Some(x) => PathBuf::from(shellexpand::tilde_with_context(&x, || remote_home).as_ref()),
             None => {
-                let mut pf = PathBuf::from(&remote_home);
+                let mut pf = PathBuf::from(&remote_home.unwrap());
                 match diff_paths(&local_path_pf, env!("HOME")) {
                     Some(x) => {
                         pf.push(x);
@@ -118,7 +116,7 @@ async fn main() -> Result<(), Error> {
     let mut connection = Connection::new(
         remote_path,
         &local_path,
-        format!("/home/{}", host_params.user.unwrap()),
+        host_params.user.map(|u| format!("/home/{u}")),
     );
 
     connection.remote_path = sftp
