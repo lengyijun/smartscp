@@ -19,6 +19,7 @@ use users::{get_current_uid, get_user_by_uid};
 
 #[derive(Debug)]
 pub struct Connection {
+    // always save an absolute path
     remote_path: PathBuf,
     // always save an absolute path
     local_path: PathBuf,
