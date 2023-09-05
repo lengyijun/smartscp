@@ -104,8 +104,11 @@ pub async fn upload_file(
     local_path: &Path,
     remote_path: &Path,
 ) -> Result<(), (Error, PathBuf)> {
+    let mut file = File::open(local_path)
+        .await
+        .expect(&format!("unable to open local file: {:?}", local_path));
+
     println!("{:?}", local_path.file_name().unwrap());
-    let mut file = File::open(local_path).await.unwrap();
     let permissions = file.metadata().await.unwrap().permissions().mode() & 0o777;
 
     let mut v = vec![];
