@@ -140,6 +140,12 @@ async fn main() -> Result<(), Error> {
 }
 
 fn is_gitignore_local(p: &Path) -> bool {
+    for x in PathBuf::from(p).into_iter() {
+        if x == ".git" {
+            return false;
+        }
+    }
+
     let parent = {
         let mut x: PathBuf = PathBuf::from(p);
         x.pop();
