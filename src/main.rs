@@ -49,6 +49,10 @@ impl Connection {
                 pf
             }
         };
+
+        assert!(remote_path_pf.is_absolute());
+        assert!(local_path_pf.is_absolute());
+
         Connection {
             remote_path: remote_path_pf,
             local_path: local_path_pf,
@@ -114,17 +118,11 @@ async fn main() -> Result<(), Error> {
 
     let sftp = Sftp::from_session(sess, SftpOptions::new()).await.unwrap();
 
-    let mut connection = Connection::new(
+    let connection = Connection::new(
         remote_path,
         &local_path,
         host_params.user.map(|u| format!("/home/{u}")),
     );
-
-    connection.remote_path = sftp
-        .fs()
-        .canonicalize(connection.remote_path)
-        .await
-        .unwrap();
 
     match direction {
         Direction::Upload => {
