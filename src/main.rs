@@ -32,9 +32,7 @@ impl Connection {
             Err(_) => panic!("not a valid local path"),
         };
         if local_path_pf.is_relative() {
-            let mut current_dir = env::current_dir().unwrap();
-            current_dir.push(local_path_pf);
-            local_path_pf = current_dir;
+            local_path_pf = env::current_dir().unwrap().join(local_path_pf);
         }
         let remote_path_pf: PathBuf = match remote_path {
             Some(x) => PathBuf::from(shellexpand::tilde_with_context(&x, || remote_home).as_ref()),
@@ -60,9 +58,8 @@ impl Connection {
     }
 
     fn calculate_remote_path(&self, p: &Path) -> PathBuf {
-        let mut pf: PathBuf = PathBuf::from(&self.remote_path);
-        pf.push(diff_paths(p, &self.local_path).unwrap());
-        pf
+        self.remote_path
+            .join(diff_paths(p, &self.local_path).unwrap())
     }
 }
 

@@ -52,8 +52,8 @@ async fn download_dir(
     blacklist: Option<HashSet<PathBuf>>,
 ) -> Result<(), Error> {
     // mkdir locally
-    let mut local_dir = PathBuf::from(&c.local_path);
-    local_dir.push(diff_paths(&remote_dir, &c.remote_path).unwrap());
+    let local_dir =
+        PathBuf::from(&c.local_path).join(diff_paths(&remote_dir, &c.remote_path).unwrap());
 
     let _ = std::fs::create_dir_all(&local_dir);
 
@@ -97,9 +97,11 @@ async fn download_dir(
             if entry.file_type().unwrap().is_dir() {
                 v1.push(remote_pf);
             } else if !blacklist.contains(&remote_pf) {
-                let mut local_path = local_dir.clone();
-                local_path.push(remote_pf.file_name().unwrap());
-                v2.push(download_file(sftp, local_path.clone(), remote_pf.clone()));
+                v2.push(download_file(
+                    sftp,
+                    local_dir.join(remote_pf.file_name().unwrap()),
+                    remote_pf.clone(),
+                ));
             }
             ready(())
         })
