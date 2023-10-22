@@ -1,7 +1,7 @@
 use crate::increase_nofile_limit;
-use crate::is_gitignore_local;
 use crate::Connection;
 use futures::stream::{self, StreamExt};
+use ignore::{DirEntry, WalkBuilder};
 use openssh_sftp_client::metadata::Permissions;
 use openssh_sftp_client::Error;
 use openssh_sftp_client::Sftp;
@@ -10,7 +10,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
-use walkdir::{DirEntry, WalkDir};
 
 pub async fn upload(mut c: Connection, sftp: &Sftp) -> Result<(), Error> {
     println!("upload {:?} ", c);
@@ -43,7 +42,7 @@ pub async fn upload(mut c: Connection, sftp: &Sftp) -> Result<(), Error> {
             }
         }
 
-        let walker = WalkDir::new(&c.local_path).into_iter();
+        let walker = WalkBuilder::new(&c.local_path).hidden(false).build();
         let mut v = vec![];
         for entry in walker {
             let entry = entry.unwrap();
@@ -55,7 +54,7 @@ pub async fn upload(mut c: Connection, sftp: &Sftp) -> Result<(), Error> {
             .map_or_else(|_| 512, |n| n / 4)
             .min(1024);
         let stream = stream::iter(v)
-            .buffered(soft_limit as usize)
+            .buffer_unordered(soft_limit as usize)
             .collect::<Vec<_>>()
             .await;
 
@@ -91,11 +90,9 @@ pub async fn upload_worker(
             .create_dir(&c.calculate_remote_path(entry.path()))
             .await;
         Ok(())
-    } else if !is_gitignore_local(entry.path()) {
+    } else {
         let remote_path = c.calculate_remote_path(entry.path());
         upload_file(sftp, entry.path(), &remote_path).await
-    } else {
-        Ok(())
     }
 }
 
@@ -113,6 +110,7 @@ pub async fn upload_file(
 
     let mut v = vec![];
     file.read_to_end(&mut v).await.unwrap();
+    drop(file);
 
     let mut f = sftp
         .options()
@@ -121,6 +119,14 @@ pub async fn upload_file(
         .open(&remote_path)
         .await
         .map_err(|e| (e, PathBuf::from(remote_path)))?;
+
+    // write first, then set permission
+    // permission maybe readonly
+    f.write_all(&v)
+        .await
+        .map_err(|e| (e, PathBuf::from(remote_path)))?;
+    drop(v);
+
     let mut perm = Permissions::new();
 
     perm.set_read_by_owner((permissions & 0b100_000_000) != 0);
@@ -135,13 +141,11 @@ pub async fn upload_file(
     perm.set_write_by_other((permissions & 0b000_000_010) != 0);
     perm.set_execute_by_other((permissions & 0b000_000_001) != 0);
 
-    // write first, then set permission
-    // permission maybe readonly
-    f.write_all(&v)
+    f.set_permissions(perm)
         .await
         .map_err(|e| (e, PathBuf::from(remote_path)))?;
 
-    f.set_permissions(perm)
+    f.sync_all()
         .await
         .map_err(|e| (e, PathBuf::from(remote_path)))
 }

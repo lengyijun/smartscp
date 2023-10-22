@@ -8,7 +8,6 @@ edition = "2021"
 [dependencies]
 pathdiff = "0.2.1"
 ssh2-config = "0.2.2"
-walkdir = "2"
 shellexpand = "3.1"
 users = "0.11"
 openssh-sftp-client = {version = "0.13.10", features=["openssh"]}
@@ -18,3 +17,4 @@ tokio = {version = "1.32.0", features=["full"]}
 futures = "0.3.28"
 async-recursion = "1.0.5"
 rlimit = "0.10.1"
+ignore = "0.4.20"

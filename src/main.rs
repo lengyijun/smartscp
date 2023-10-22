@@ -13,7 +13,6 @@ use std::env;
 use std::io::BufReader;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use tokio::fs::File;
 use users::{get_current_uid, get_user_by_uid};
 
@@ -134,26 +133,6 @@ async fn main() -> Result<(), Error> {
             Ok(())
         }
     }
-}
-
-fn is_gitignore_local(p: &Path) -> bool {
-    for x in PathBuf::from(p).into_iter() {
-        if x == ".git" {
-            return false;
-        }
-    }
-
-    let parent = {
-        let mut x: PathBuf = PathBuf::from(p);
-        x.pop();
-        x
-    };
-    let output = Command::new("git")
-        .args(["check-ignore", p.to_str().unwrap()])
-        .current_dir(parent)
-        .output()
-        .expect("failed to git check-ignore");
-    !output.stdout.is_empty()
 }
 
 async fn get_ignored_and_untracked(
