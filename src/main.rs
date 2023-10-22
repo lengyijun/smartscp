@@ -1,4 +1,5 @@
 mod download;
+pub mod error;
 mod upload;
 use openssh::{KnownHosts, Session};
 use openssh_sftp_client::Error;
@@ -68,8 +69,7 @@ enum Direction {
     Download,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Error> {
+fn main() -> Result<(), Error> {
     let mut arg_iter = env::args().skip(1);
     let arg1: String = arg_iter.next().unwrap();
     let arg2: String = arg_iter.next().unwrap();
@@ -109,10 +109,16 @@ async fn main() -> Result<(), Error> {
             unimplemented!("don't support filename contains :")
         }
     };
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
 
-    let (host_params, sess) = get_remote_host(&remote_host).await.unwrap();
+    let (host_params, sess) = rt.block_on(get_remote_host(&remote_host)).unwrap();
 
-    let sftp = Sftp::from_session(sess, SftpOptions::new()).await.unwrap();
+    let sftp = rt
+        .block_on(Sftp::from_session(sess, SftpOptions::new()))
+        .unwrap();
 
     let connection = Connection::new(
         remote_path,
@@ -122,14 +128,22 @@ async fn main() -> Result<(), Error> {
 
     match direction {
         Direction::Upload => {
-            let _ = upload::upload(connection, &sftp).await;
-            let _ = sftp.open("/tmp").await.unwrap().sync_all().await;
+            let (_host_params, sess) = rt.block_on(get_remote_host(&remote_host)).unwrap();
+            let mut uploader = upload::Uploader {
+                c: connection,
+                sess,
+                sftp: &sftp,
+                rt,
+            };
+            match uploader.upload() {
+                Ok(_) => {}
+                Err(e) => eprintln!("{:?}", e),
+            }
             Ok(())
         }
         Direction::Download => {
-            let (_, sess) = get_remote_host(&remote_host).await.unwrap();
-            let _ = download::download(connection, sess, sftp).await;
-            File::open("/tmp").await.unwrap().sync_all().await.unwrap();
+            let (_host_params, sess) = rt.block_on(get_remote_host(&remote_host)).unwrap();
+            let _ = rt.block_on(download::download(connection, sess, sftp));
             Ok(())
         }
     }

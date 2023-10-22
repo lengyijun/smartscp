@@ -1,64 +1,187 @@
-use crate::increase_nofile_limit;
+use crate::error::Error;
 use crate::Connection;
+use futures::future::join_all;
 use futures::stream::{self, StreamExt};
-use ignore::{DirEntry, WalkBuilder};
+use git2::Repository;
+use git2::Signature;
+use git2::Time;
+use openssh::Session;
 use openssh_sftp_client::metadata::Permissions;
-use openssh_sftp_client::Error;
 use openssh_sftp_client::Sftp;
 use std::os::unix::prelude::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
+use tokio::runtime::Runtime;
+use walkdir::WalkDir;
 
-pub async fn upload(mut c: Connection, sftp: &Sftp) -> Result<(), Error> {
-    println!("upload {:?} ", c);
-    let remote_dir_filestat = match sftp.open(&c.remote_path).await {
-        Ok(mut file) => file.metadata().await.map(|x| x.file_type()),
-        Err(e) => Err(e),
-    };
+pub struct Uploader<'a> {
+    pub c: Connection,
+    pub sess: Session,
+    pub sftp: &'a Sftp,
+    pub rt: Runtime,
+}
 
-    if remote_dir_filestat.is_err() {
-        let mut v: Vec<_> = c.remote_path.ancestors().skip(1).collect();
-        v.reverse();
-        for p in v {
-            let _ = sftp.fs().create_dir(p).await;
+impl<'a> Uploader<'a> {
+    pub fn upload(&mut self) -> Result<(), Error> {
+        println!("upload {:?} ", self.c);
+        let remote_dir_filestat = match self.rt.block_on(self.sftp.open(&self.c.remote_path)) {
+            Ok(mut file) => self.rt.block_on(file.metadata()).map(|x| x.file_type()),
+            Err(e) => Err(e),
+        };
+
+        if remote_dir_filestat.is_err() {
+            let mut v: Vec<_> = self.c.remote_path.ancestors().skip(1).collect();
+            v.reverse();
+            for p in v {
+                let _ = self.rt.block_on(self.sftp.fs().create_dir(p));
+            }
+        }
+
+        if self.c.local_path.is_dir() {
+            match remote_dir_filestat {
+                Ok(Some(stat)) => {
+                    if !stat.is_dir() {
+                        panic!("remote path is not a dir");
+                    }
+                    self.c
+                        .remote_path
+                        .push(self.c.local_path.file_name().unwrap());
+                    // needless to create_dir here
+                    // we will create_dir in walker
+                    // let _ = sftp.fs().create_dir(&c.remote_path).await;
+                }
+                _ => {
+                    self.rt
+                        .block_on(self.sftp.fs().create_dir(&self.c.remote_path))
+                        .unwrap();
+                }
+            }
+            self.upload_dir(&self.c.local_path.clone())?;
+            Ok(())
+        } else {
+            if let Ok(Some(stat)) = remote_dir_filestat {
+                if stat.is_dir() {
+                    self.c
+                        .remote_path
+                        .push(self.c.local_path.file_name().unwrap());
+                }
+            }
+            self.rt
+                .block_on(self.upload_file(&self.c.local_path.clone(), &self.c.remote_path.clone()))
+                .unwrap();
+            Ok(())
         }
     }
 
-    if c.local_path.is_dir() {
-        match remote_dir_filestat {
-            Ok(Some(stat)) => {
-                if !stat.is_dir() {
-                    panic!("remote path is not a dir");
-                }
-                c.remote_path.push(c.local_path.file_name().unwrap());
-                // needless to create_dir here
-                // we will create_dir in walker
-                // let _ = sftp.fs().create_dir(&c.remote_path).await;
-            }
-            _ => {
-                sftp.fs().create_dir(&c.remote_path).await.unwrap();
-            }
+    pub async fn touch_or_mkdir(&self, entry: walkdir::DirEntry) -> Result<(), Error> {
+        if entry.path().is_dir() {
+            let x = &self.c.calculate_remote_path(entry.path());
+            let _ = self.sftp.fs().create_dir(x).await;
+            Ok(())
+        } else {
+            self.upload_file_2(entry.path()).await
         }
+    }
 
-        let walker = WalkBuilder::new(&c.local_path).hidden(false).build();
+    pub async fn upload_file_2(&self, local_path: &Path) -> Result<(), Error> {
+        let remote_path = self.c.calculate_remote_path(local_path);
+        self.upload_file(local_path, &remote_path).await
+    }
+
+    pub async fn upload_file(&self, local_path: &Path, remote_path: &Path) -> Result<(), Error> {
+        let mut file = File::open(local_path)
+            .await
+            .expect(&format!("unable to open local file: {:?}", local_path));
+
+        println!("{:?}", local_path.file_name().unwrap());
+        let permissions = file.metadata().await.unwrap().permissions().mode() & 0o777;
+
         let mut v = vec![];
-        for entry in walker {
-            let entry = entry.unwrap();
-            v.push(upload_worker(&c, sftp, entry));
+        file.read_to_end(&mut v).await.unwrap();
+
+        let mut f = self
+            .sftp
+            .options()
+            .create(true)
+            .write(true)
+            .open(&remote_path)
+            .await
+            .map_err(|e| Error(PathBuf::from(remote_path), e))?;
+
+        // write first, then set permission
+        // permission maybe readonly
+        f.write_all(&v)
+            .await
+            .map_err(|e| Error(PathBuf::from(remote_path), e))?;
+
+        let mut perm = Permissions::new();
+
+        perm.set_read_by_owner((permissions & 0b100_000_000) != 0);
+        perm.set_write_by_owner((permissions & 0b010_000_000) != 0);
+        perm.set_execute_by_owner((permissions & 0b001_000_000) != 0);
+
+        perm.set_read_by_group((permissions & 0b000_100_000) != 0);
+        perm.set_write_by_group((permissions & 0b000_010_000) != 0);
+        perm.set_execute_by_group((permissions & 0b000_001_000) != 0);
+
+        perm.set_read_by_other((permissions & 0b000_000_100) != 0);
+        perm.set_write_by_other((permissions & 0b000_000_010) != 0);
+        perm.set_execute_by_other((permissions & 0b000_000_001) != 0);
+
+        f.set_permissions(perm)
+            .await
+            .map_err(|e| Error(PathBuf::from(remote_path), e))?;
+
+        f.sync_all()
+            .await
+            .map_err(|e| Error(PathBuf::from(remote_path), e))
+    }
+
+    fn upload_file_or_dir(&self, entry: &Path) -> Result<(), Error> {
+        if entry.is_dir() {
+            self.upload_dir(entry)
+        } else {
+            let remote_path = self.c.calculate_remote_path(entry);
+            self.rt
+                .block_on(async { self.upload_file(entry, &remote_path).await })
         }
+    }
 
-        // send too fast will run out of fd
-        let soft_limit = increase_nofile_limit()
-            .map_or_else(|_| 512, |n| n / 4)
-            .min(1024);
-        let stream = stream::iter(v)
-            .buffer_unordered(soft_limit as usize)
-            .collect::<Vec<_>>()
-            .await;
+    fn upload_dir(&self, path: &Path) -> Result<(), Error> {
+        match Repository::open(path) {
+            Ok(repo) => self.upload_git_dir(repo),
+            Err(_) => {
+                let walker = walkdir::WalkDir::new(path).max_depth(1);
+                for entry in walker {
+                    let entry = entry.unwrap();
+                    if entry.path() == path {
+                        continue;
+                    }
+                    self.upload_file_or_dir(entry.path())?;
+                }
+                Ok(())
+            }
+        }
+    }
 
-        for x in stream.into_iter() {
+    // upload a dir, without checking git, recursively
+    async fn upload_non_git_dir(&self, path: &Path) -> Result<(), Error> {
+        let mut v = vec![];
+        let walkdir = WalkDir::new(path);
+        for entry in walkdir {
+            let entry = entry.unwrap();
+            v.push(self.touch_or_mkdir(entry).await);
+        }
+        dbg!(v.len());
+
+        // let stream = join_all(v).await;
+
+        //TODO: remove
+        for x in v.into_iter() {
             match x {
                 Ok(()) => {}
                 Err(e) => {
@@ -67,85 +190,77 @@ pub async fn upload(mut c: Connection, sftp: &Sftp) -> Result<(), Error> {
             }
         }
         Ok(())
-    } else {
-        if let Ok(Some(stat)) = remote_dir_filestat {
-            if stat.is_dir() {
-                c.remote_path.push(c.local_path.file_name().unwrap());
+    }
+
+    fn upload_git_dir(&self, mut repo: Repository) -> Result<(), Error> {
+        let x = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        let stasher: Signature = Signature::new(
+            "smartscp",
+            "smartscp@gmail.com",
+            &Time::new(x.as_secs().try_into().unwrap(), 0),
+        )
+        .unwrap();
+        let should_stash_pop = repo.stash_save2(&stasher, None, None).is_ok();
+
+        let x = self
+            .rt
+            .block_on(async { self.upload_non_git_dir(repo.path()).await.unwrap() });
+
+        let mut path_buf = PathBuf::from(repo.path());
+        path_buf.pop();
+        let remote_path = self.c.calculate_remote_path(&path_buf);
+        dbg!(&remote_path);
+        let x = self.rt.block_on(async {
+            self.sess
+                .command("sh")
+                .arg("-c")
+                .arg(&format!(
+                    "cd {} && git checkout . && git submodule update --init --recursive",
+                    remote_path.to_string_lossy()
+                ))
+                .spawn()
+                .await
+        });
+        if should_stash_pop {
+            let x = self.rt.block_on(async {
+                self.sess
+                    .command("sh")
+                    .arg("-c")
+                    .arg(&format!(
+                        "cd {} && git stash pop",
+                        remote_path.to_string_lossy()
+                    ))
+                    .spawn()
+                    .await
+            });
+        }
+
+        for path in list_untracked_files(&mut repo) {
+            self.upload_file_or_dir(Path::new(&path))?;
+        }
+
+        // pop the first stash
+        if should_stash_pop {
+            repo.stash_pop(0, None).unwrap();
+        }
+        Ok(())
+    }
+}
+
+fn list_untracked_files(repo: &mut Repository) -> Vec<String> {
+    let mut v = Vec::new();
+    // Get the status options
+    let mut opts = git2::StatusOptions::new();
+    opts.include_untracked(true);
+
+    // Iterate over the status entries
+    if let Ok(untracked_files) = repo.statuses(Some(&mut opts)) {
+        for entry in untracked_files.iter() {
+            // Check if the entry is untracked
+            if entry.status().contains(git2::Status::WT_NEW) {
+                v.push(entry.path().unwrap().to_owned())
             }
         }
-        upload_file(sftp, &c.local_path, &c.remote_path)
-            .await
-            .map_err(|(e, _)| e)
     }
-}
-
-pub async fn upload_worker(
-    c: &Connection,
-    sftp: &Sftp,
-    entry: DirEntry,
-) -> Result<(), (Error, PathBuf)> {
-    if entry.path().is_dir() {
-        let _ = sftp
-            .fs()
-            .create_dir(&c.calculate_remote_path(entry.path()))
-            .await;
-        Ok(())
-    } else {
-        let remote_path = c.calculate_remote_path(entry.path());
-        upload_file(sftp, entry.path(), &remote_path).await
-    }
-}
-
-pub async fn upload_file(
-    sftp: &Sftp,
-    local_path: &Path,
-    remote_path: &Path,
-) -> Result<(), (Error, PathBuf)> {
-    let mut file = File::open(local_path)
-        .await
-        .expect(&format!("unable to open local file: {:?}", local_path));
-
-    println!("{:?}", local_path.file_name().unwrap());
-    let permissions = file.metadata().await.unwrap().permissions().mode() & 0o777;
-
-    let mut v = vec![];
-    file.read_to_end(&mut v).await.unwrap();
-    drop(file);
-
-    let mut f = sftp
-        .options()
-        .create(true)
-        .write(true)
-        .open(&remote_path)
-        .await
-        .map_err(|e| (e, PathBuf::from(remote_path)))?;
-
-    // write first, then set permission
-    // permission maybe readonly
-    f.write_all(&v)
-        .await
-        .map_err(|e| (e, PathBuf::from(remote_path)))?;
-    drop(v);
-
-    let mut perm = Permissions::new();
-
-    perm.set_read_by_owner((permissions & 0b100_000_000) != 0);
-    perm.set_write_by_owner((permissions & 0b010_000_000) != 0);
-    perm.set_execute_by_owner((permissions & 0b001_000_000) != 0);
-
-    perm.set_read_by_group((permissions & 0b000_100_000) != 0);
-    perm.set_write_by_group((permissions & 0b000_010_000) != 0);
-    perm.set_execute_by_group((permissions & 0b000_001_000) != 0);
-
-    perm.set_read_by_other((permissions & 0b000_000_100) != 0);
-    perm.set_write_by_other((permissions & 0b000_000_010) != 0);
-    perm.set_execute_by_other((permissions & 0b000_000_001) != 0);
-
-    f.set_permissions(perm)
-        .await
-        .map_err(|e| (e, PathBuf::from(remote_path)))?;
-
-    f.sync_all()
-        .await
-        .map_err(|e| (e, PathBuf::from(remote_path)))
+    v
 }

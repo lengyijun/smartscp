@@ -17,4 +17,5 @@ tokio = {version = "1.32.0", features=["full"]}
 futures = "0.3.28"
 async-recursion = "1.0.5"
 rlimit = "0.10.1"
-ignore = "0.4.20"
+git2 = "0.18.1"
+walkdir = "2.4.0"
