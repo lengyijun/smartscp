@@ -1,7 +1,7 @@
 use crate::error::Error;
 use crate::Connection;
-use futures::future::join_all;
 use anyhow::Result;
+use futures::future::join_all;
 use futures::stream::{self, StreamExt};
 use git2::Repository;
 use git2::Signature;
@@ -14,6 +14,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
+use std::{thread, time::Duration};
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::runtime::Runtime;
@@ -222,6 +223,10 @@ impl<'a> Uploader<'a> {
         opts.include_untracked(true);
         // don't deal with submodule because submodules status is complicated
         opts.exclude_submodules(true);
+
+        // on my Ubuntu, must wait for a second
+        // on manjaro, don't need to wait
+        thread::sleep(Duration::from_secs(1));
 
         // list untracked files, modifed files and remove removed files
         if let Ok(untracked_files) = repo.statuses(Some(&mut opts)) {
