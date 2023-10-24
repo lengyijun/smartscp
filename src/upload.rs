@@ -176,7 +176,6 @@ impl<'a> Uploader<'a> {
             let entry = entry.unwrap();
             v.push(self.touch_or_mkdir(entry).await);
         }
-        dbg!(v.len());
 
         // let stream = join_all(v).await;
 
@@ -192,15 +191,8 @@ impl<'a> Uploader<'a> {
         Ok(())
     }
 
-    fn upload_git_dir(&self, mut repo: Repository) -> Result<(), Error> {
+    fn upload_git_dir(&self, repo: Repository) -> Result<(), Error> {
         let x = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        let stasher: Signature = Signature::new(
-            "smartscp",
-            "smartscp@gmail.com",
-            &Time::new(x.as_secs().try_into().unwrap(), 0),
-        )
-        .unwrap();
-        let should_stash_pop = repo.stash_save2(&stasher, None, None).is_ok();
 
         let x = self
             .rt
@@ -208,8 +200,8 @@ impl<'a> Uploader<'a> {
 
         let mut path_buf = PathBuf::from(repo.path());
         path_buf.pop();
+        let path_buf = path_buf;
         let remote_path = self.c.calculate_remote_path(&path_buf);
-        dbg!(&remote_path);
         let x = self.rt.block_on(async {
             self.sess
                 .command("sh")
@@ -221,46 +213,36 @@ impl<'a> Uploader<'a> {
                 .spawn()
                 .await
         });
-        if should_stash_pop {
-            let x = self.rt.block_on(async {
-                self.sess
-                    .command("sh")
-                    .arg("-c")
-                    .arg(&format!(
-                        "cd {} && git stash pop",
-                        remote_path.to_string_lossy()
-                    ))
-                    .spawn()
-                    .await
-            });
-        }
 
-        for path in list_untracked_files(&mut repo) {
-            self.upload_file_or_dir(Path::new(&path))?;
-        }
+        let mut opts = git2::StatusOptions::new();
+        opts.include_untracked(true);
+        // don't deal with submodule because submodules status is complicated
+        opts.exclude_submodules(true);
 
-        // pop the first stash
-        if should_stash_pop {
-            repo.stash_pop(0, None).unwrap();
-        }
-        Ok(())
-    }
-}
-
-fn list_untracked_files(repo: &mut Repository) -> Vec<String> {
-    let mut v = Vec::new();
-    // Get the status options
-    let mut opts = git2::StatusOptions::new();
-    opts.include_untracked(true);
-
-    // Iterate over the status entries
-    if let Ok(untracked_files) = repo.statuses(Some(&mut opts)) {
-        for entry in untracked_files.iter() {
-            // Check if the entry is untracked
-            if entry.status().contains(git2::Status::WT_NEW) {
-                v.push(entry.path().unwrap().to_owned())
+        // list untracked files, modifed files and remove removed files
+        if let Ok(untracked_files) = repo.statuses(Some(&mut opts)) {
+            for entry in untracked_files.iter() {
+                if entry.status().contains(git2::Status::IGNORED) {
+                    continue;
+                }
+                let path = path_buf.join(entry.path().unwrap());
+                if entry.status().contains(git2::Status::WT_DELETED) {
+                    let x = self.rt.block_on(async {
+                        self.sess
+                            .command("sh")
+                            .arg("-c")
+                            .arg(&format!("rm -rf {}", path.to_string_lossy(),))
+                            .spawn()
+                            .await
+                    });
+                } else if entry.status().contains(git2::Status::WT_NEW)
+                    || entry.status().contains(git2::Status::WT_MODIFIED)
+                {
+                    self.upload_file_or_dir(&path)?;
+                }
             }
         }
+
+        Ok(())
     }
-    v
 }
