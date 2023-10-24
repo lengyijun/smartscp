@@ -203,17 +203,20 @@ impl<'a> Uploader<'a> {
         path_buf.pop();
         let path_buf = path_buf;
         let remote_path = self.c.calculate_remote_path(&path_buf);
-        let x = self.rt.block_on(async {
-            self.sess
-                .command("sh")
-                .arg("-c")
-                .arg(&format!(
-                    "cd {} && git checkout . && git submodule update --init --recursive",
-                    remote_path.to_string_lossy()
-                ))
-                .spawn()
-                .await
-        });
+        let x = self
+            .rt
+            .block_on(async {
+                self.sess
+                    .command("sh")
+                    .arg("-c")
+                    .arg(&format!(
+                        "cd {} && git checkout . && git submodule update --init --recursive",
+                        remote_path.to_string_lossy()
+                    ))
+                    .spawn()
+                    .await
+            })
+            .unwrap();
 
         let mut opts = git2::StatusOptions::new();
         opts.include_untracked(true);
@@ -228,14 +231,17 @@ impl<'a> Uploader<'a> {
                 }
                 let path = path_buf.join(entry.path().unwrap());
                 if entry.status().contains(git2::Status::WT_DELETED) {
-                    let x = self.rt.block_on(async {
-                        self.sess
-                            .command("sh")
-                            .arg("-c")
-                            .arg(&format!("rm -rf {}", path.to_string_lossy(),))
-                            .spawn()
-                            .await
-                    });
+                    let x = self
+                        .rt
+                        .block_on(async {
+                            self.sess
+                                .command("sh")
+                                .arg("-c")
+                                .arg(&format!("rm -rf {}", path.to_string_lossy(),))
+                                .spawn()
+                                .await
+                        })
+                        .unwrap();
                 } else if entry.status().contains(git2::Status::WT_NEW)
                     || entry.status().contains(git2::Status::WT_MODIFIED)
                 {
