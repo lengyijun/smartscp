@@ -1,6 +1,7 @@
 use crate::error::Error;
 use crate::Connection;
 use futures::future::join_all;
+use anyhow::Result;
 use futures::stream::{self, StreamExt};
 use git2::Repository;
 use git2::Signature;
