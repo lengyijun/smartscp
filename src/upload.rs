@@ -52,9 +52,9 @@ impl<'a> Uploader<'a> {
                     self.c
                         .remote_path
                         .push(self.c.local_path.file_name().unwrap());
-                    // needless to create_dir here
-                    // we will create_dir in walker
-                    // let _ = sftp.fs().create_dir(&c.remote_path).await;
+                    self.rt
+                        .block_on(self.sftp.fs().create_dir(&self.c.remote_path))
+                        .unwrap();
                 }
                 _ => {
                     self.rt
