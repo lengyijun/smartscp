@@ -69,7 +69,7 @@ impl Connection {
             }
             None => {
                 let mut pf = PathBuf::from(&remote_home.unwrap());
-                match diff_paths(&local_path_pf, env!("HOME")) {
+                match diff_paths(&local_path_pf, std::env::var("HOME").unwrap()) {
                     Some(x) => {
                         pf.push(x);
                     }
@@ -246,7 +246,9 @@ async fn get_remote_host(remote_host: &str) -> Result<(HostParams, Session), ope
             ignored_fields: HashMap::new(),
         },
         None => {
-            let ssh_config_location: PathBuf = [env!("HOME"), ".ssh", "config"].iter().collect();
+            let ssh_config_location: PathBuf = [&std::env::var("HOME").unwrap(), ".ssh", "config"]
+                .iter()
+                .collect();
 
             let mut reader = BufReader::new(
                 std::fs::File::open(ssh_config_location)
