@@ -9,6 +9,7 @@ use git2::Time;
 use openssh::Session;
 use openssh_sftp_client::metadata::Permissions;
 use openssh_sftp_client::Sftp;
+use std::ops::DerefMut;
 use std::os::unix::prelude::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -30,7 +31,7 @@ pub struct Uploader<'a> {
 impl<'a> Uploader<'a> {
     pub fn upload(&mut self) -> Result<(), Error> {
         println!("upload {:?} ", self.c);
-        let remote_dir_filestat = match self.rt.block_on(self.sftp.open(&self.c.remote_path)) {
+        let remote_dir_filestat = match self.rt.block_on(self.sftp.open(&*self.c.remote_path)) {
             Ok(mut file) => self.rt.block_on(file.metadata()).map(|x| x.file_type()),
             Err(e) => Err(e),
         };
@@ -49,16 +50,21 @@ impl<'a> Uploader<'a> {
                     if !stat.is_dir() {
                         panic!("remote path is not a dir");
                     }
-                    self.c
-                        .remote_path
-                        .push(self.c.local_path.file_name().unwrap());
+                    match &mut self.c.remote_path {
+                        crate::PathProvenance::Inferred(x) => {
+                            panic!("remote destination {:?} already exists, please provide another destination", x)
+                        }
+                        crate::PathProvenance::UserProvided(p) => {
+                            p.push(self.c.local_path.file_name().unwrap());
+                        }
+                    }
                     self.rt
-                        .block_on(self.sftp.fs().create_dir(&self.c.remote_path))
+                        .block_on(self.sftp.fs().create_dir(&*self.c.remote_path))
                         .unwrap();
                 }
                 _ => {
                     self.rt
-                        .block_on(self.sftp.fs().create_dir(&self.c.remote_path))
+                        .block_on(self.sftp.fs().create_dir(&*self.c.remote_path))
                         .unwrap();
                 }
             }

@@ -12,15 +12,42 @@ use std::cmp;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::io::BufReader;
+use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::path::PathBuf;
 use tokio::fs::File;
 use users::{get_current_uid, get_user_by_uid};
 
 #[derive(Debug)]
+pub enum PathProvenance {
+    Inferred(PathBuf),
+    UserProvided(PathBuf),
+}
+
+impl Deref for PathProvenance {
+    type Target = PathBuf;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            PathProvenance::Inferred(p) => p,
+            PathProvenance::UserProvided(p) => p,
+        }
+    }
+}
+
+impl DerefMut for PathProvenance {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            PathProvenance::Inferred(p) => p,
+            PathProvenance::UserProvided(p) => p,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct Connection {
     // always save an absolute path
-    remote_path: PathBuf,
+    remote_path: PathProvenance,
     // always save an absolute path
     local_path: PathBuf,
 }
@@ -34,8 +61,12 @@ impl Connection {
         if local_path_pf.is_relative() {
             local_path_pf = env::current_dir().unwrap().join(local_path_pf);
         }
-        let remote_path_pf: PathBuf = match remote_path {
-            Some(x) => PathBuf::from(shellexpand::tilde_with_context(&x, || remote_home).as_ref()),
+        let remote_path_pf = match remote_path {
+            Some(x) => {
+                let pf =
+                    PathBuf::from(shellexpand::tilde_with_context(&x, || remote_home).as_ref());
+                PathProvenance::UserProvided(pf)
+            }
             None => {
                 let mut pf = PathBuf::from(&remote_home.unwrap());
                 match diff_paths(&local_path_pf, env!("HOME")) {
@@ -44,7 +75,7 @@ impl Connection {
                     }
                     None => panic!("don't support upload to remote path other than home"),
                 }
-                pf
+                PathProvenance::Inferred(pf)
             }
         };
 

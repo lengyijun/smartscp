@@ -17,7 +17,7 @@ use tokio::io::AsyncWriteExt;
 
 pub async fn download(mut c: Connection, mut sess: Session, sftp: Sftp) -> Result<(), Error> {
     let remote_dir_filestat = sftp
-        .open(&c.remote_path)
+        .open(&*c.remote_path)
         .await
         .unwrap()
         .metadata()
@@ -53,7 +53,7 @@ async fn download_dir(
 ) -> Result<(), Error> {
     // mkdir locally
     let local_dir =
-        PathBuf::from(&c.local_path).join(diff_paths(&remote_dir, &c.remote_path).unwrap());
+        PathBuf::from(&c.local_path).join(diff_paths(&remote_dir, &*c.remote_path).unwrap());
 
     let _ = std::fs::create_dir_all(&local_dir);
 
