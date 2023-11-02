@@ -171,7 +171,9 @@ fn main() -> Result<(), Error> {
         }
         Direction::Download => {
             let (_host_params, sess) = rt.block_on(get_remote_host(&remote_host)).unwrap();
-            let _ = rt.block_on(download::download(connection, sess, sftp));
+            let _ = rt
+                .block_on(download::download(connection, sess, sftp))
+                .unwrap();
             Ok(())
         }
     }
