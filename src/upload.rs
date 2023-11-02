@@ -1,20 +1,13 @@
 use crate::error::Error;
 use crate::Connection;
 use anyhow::Result;
-use futures::future::join_all;
-use futures::stream::{self, StreamExt};
 use git2::Repository;
-use git2::Signature;
-use git2::Time;
 use openssh::Session;
 use openssh_sftp_client::metadata::Permissions;
 use openssh_sftp_client::Sftp;
-use std::ops::DerefMut;
 use std::os::unix::prelude::PermissionsExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 use std::{thread, time::Duration};
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
@@ -207,7 +200,7 @@ impl<'a> Uploader<'a> {
         path_buf.pop();
         let path_buf = path_buf;
         let remote_path = self.c.calculate_remote_path(&path_buf);
-        let x = self
+        let _x = self
             .rt
             .block_on(async {
                 self.sess
@@ -239,7 +232,7 @@ impl<'a> Uploader<'a> {
                 }
                 let path = path_buf.join(entry.path().unwrap());
                 if entry.status().contains(git2::Status::WT_DELETED) {
-                    let x = self
+                    let _x = self
                         .rt
                         .block_on(async {
                             self.sess

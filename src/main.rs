@@ -15,7 +15,6 @@ use std::io::BufReader;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::path::PathBuf;
-use tokio::fs::File;
 use users::{get_current_uid, get_user_by_uid};
 
 #[derive(Debug)]
