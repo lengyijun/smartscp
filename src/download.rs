@@ -116,13 +116,16 @@ async fn download_file(
     local_path: PathBuf,
     remote_path: PathBuf,
 ) -> Result<(), Error> {
-    println!("{:?}", remote_path.file_name().unwrap());
-    let mut remote_file = sftp.open(remote_path).await?;
+    let mut remote_file = sftp.open(&remote_path).await?;
     let len: u64 = remote_file.metadata().await?.len().unwrap();
 
     let contents = remote_file.read_all(len as usize, BytesMut::new()).await?;
 
-    let mut local_file = File::create(local_path).await.unwrap();
+    let mut local_file = File::create(&local_path).await.unwrap_or_else(|e| {
+        eprintln!("{:?} {:?}", &local_path, &remote_path);
+        panic!("{}", e);
+    });
     local_file.write_all(&contents).await.unwrap();
+    println!("{:?}", remote_path.file_name().unwrap());
     Ok(())
 }
