@@ -1,5 +1,6 @@
 use crate::get_ignored_and_untracked;
 use crate::get_untracked;
+use crate::remote_fd;
 use crate::Connection;
 use async_recursion::async_recursion;
 use bytes::BytesMut;
@@ -15,6 +16,7 @@ use std::path::PathBuf;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 
+// actually, this is not an async fn
 pub async fn download(mut c: Connection, mut sess: Session, sftp: Sftp) -> Result<(), Error> {
     let remote_dir_filestat = sftp
         .open(&*c.remote_path)
@@ -30,8 +32,12 @@ pub async fn download(mut c: Connection, mut sess: Session, sftp: Sftp) -> Resul
         if !c.local_path.exists() || c.local_path.is_dir() {
             if c.local_path.exists() {
                 c.local_path.push(c.remote_path.file_name().unwrap());
+                std::fs::create_dir_all(&c.local_path)?;
             }
-            download_dir(&c, &mut sess, &sftp, c.remote_path.clone(), None).await
+            match remote_fd(&mut sess, &c.remote_path).await {
+                Ok(Some(white_list)) => download_or_mkdir(&c, &sftp, white_list).await,
+                _ => download_dir(&c, &mut sess, &sftp, c.remote_path.clone(), None).await,
+            }
         } else {
             panic!("remote dir, local not dir");
         }
@@ -41,6 +47,23 @@ pub async fn download(mut c: Connection, mut sess: Session, sftp: Sftp) -> Resul
         }
         download_file(&sftp, c.local_path.clone(), c.remote_path.clone()).await
     }
+}
+
+// white list
+// must download one by one, because must create dir before download
+async fn download_or_mkdir(
+    c: &Connection,
+    sftp: &Sftp,
+    white_list: Vec<String>,
+) -> Result<(), Error> {
+    for p in white_list {
+        if p.ends_with('/') {
+            std::fs::create_dir_all(c.local_path.join(p))?;
+        } else {
+            download_file(sftp, c.local_path.join(&p), c.remote_path.join(p)).await?;
+        }
+    }
+    Ok(())
 }
 
 #[async_recursion]

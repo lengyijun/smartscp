@@ -170,12 +170,35 @@ fn main() -> Result<(), Error> {
         }
         Direction::Download => {
             let (_host_params, sess) = rt.block_on(get_remote_host(&remote_host)).unwrap();
-            let _ = rt
-                .block_on(download::download(connection, sess, sftp))
+            rt.block_on(download::download(connection, sess, sftp))
                 .unwrap();
             Ok(())
         }
     }
+}
+
+async fn remote_fd(sess: &mut Session, dir: &Path) -> Result<Option<Vec<String>>, Error> {
+    let fd = sess
+        .command("sh")
+        .arg("-c")
+        .arg(&format!("cd {} && fd -H", dir.display()))
+        .stdout(openssh::Stdio::piped())
+        .spawn()
+        .await?
+        .wait_with_output()
+        .await?;
+
+    if !fd.status.success() {
+        return Ok(None);
+    }
+
+    let s = String::from_utf8(fd.stdout).expect("server output was not valid UTF-8");
+    let x: Vec<_> = s
+        .split(|x| x == '\n')
+        .filter(|x| !x.is_empty())
+        .map(|x| x.to_owned())
+        .collect();
+    Ok(Some(x))
 }
 
 async fn get_ignored_and_untracked(
