@@ -200,10 +200,7 @@ impl<'a> Uploader<'a> {
     }
 
     fn upload_git_dir(&self, repo: Repository) -> Result<(), Error> {
-        let x = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-
-        let x = self
-            .rt
+        self.rt
             .block_on(async { self.upload_non_git_dir(repo.path()).await.unwrap() });
 
         let mut path_buf = PathBuf::from(repo.path());

@@ -68,13 +68,10 @@ impl Connection {
                 PathProvenance::UserProvided(pf)
             }
             None => {
-                let mut pf = PathBuf::from(&remote_home.unwrap());
-                match diff_paths(&local_path_pf, std::env::var("HOME").unwrap()) {
-                    Some(x) => {
-                        pf.push(x);
-                    }
+                let pf = match diff_paths(&local_path_pf, std::env::var("HOME").unwrap()) {
+                    Some(x) => PathBuf::from(&remote_home.unwrap()).join(x),
                     None => panic!("don't support upload to remote path other than home"),
-                }
+                };
                 PathProvenance::Inferred(pf)
             }
         };

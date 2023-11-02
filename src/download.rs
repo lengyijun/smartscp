@@ -52,8 +52,9 @@ async fn download_dir(
     blacklist: Option<HashSet<PathBuf>>,
 ) -> Result<(), Error> {
     // mkdir locally
-    let local_dir =
-        PathBuf::from(&c.local_path).join(diff_paths(&remote_dir, &*c.remote_path).unwrap());
+    let local_dir = c
+        .local_path
+        .join(diff_paths(&remote_dir, &*c.remote_path).unwrap());
 
     let _ = std::fs::create_dir_all(&local_dir);
 
@@ -68,11 +69,7 @@ async fn download_dir(
             });
             ignored_or_untracked
                 .into_iter()
-                .map(|x| {
-                    let mut pf = PathBuf::from(&remote_dir);
-                    pf.push(x);
-                    pf
-                })
+                .map(|x| remote_dir.join(x))
                 .collect()
         }
     };
@@ -91,8 +88,7 @@ async fn download_dir(
             if filename == "." || filename == ".." {
                 return ready(());
             }
-            let mut remote_pf = PathBuf::from(&remote_dir);
-            remote_pf.push(entry.filename());
+            let remote_pf = remote_dir.join(entry.filename());
 
             if entry.file_type().unwrap().is_dir() {
                 v1.push(remote_pf);
