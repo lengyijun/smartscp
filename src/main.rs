@@ -1,6 +1,7 @@
 mod download;
 pub mod error;
 mod upload;
+mod upload_only_dot_git;
 use openssh::{KnownHosts, Session};
 use openssh_sftp_client::Error;
 use openssh_sftp_client::{Sftp, SftpOptions};
@@ -155,8 +156,11 @@ fn main() -> Result<(), Error> {
 
     match direction {
         Direction::Upload => {
+            /*
+            // only upload `.git/` and `git checkout` remotely
+            // faster but with bugs
             let (_host_params, sess) = rt.block_on(get_remote_host(&remote_host)).unwrap();
-            let mut uploader = upload::Uploader {
+            let mut uploader = upload_only_dot_git::Uploader {
                 c: connection,
                 sess,
                 sftp: &sftp,
@@ -166,6 +170,11 @@ fn main() -> Result<(), Error> {
                 Ok(_) => {}
                 Err(e) => eprintln!("{:?}", e),
             }
+             */
+
+            // upload directory with respect to .gitignore
+            rt.block_on(upload::upload(connection, &sftp)).unwrap();
+
             Ok(())
         }
         Direction::Download => {
