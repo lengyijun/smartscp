@@ -54,10 +54,11 @@ pub struct Connection {
 
 impl Connection {
     fn new(remote_path: Option<&str>, local_path: &str, remote_home: Option<String>) -> Self {
-        let mut local_path_pf = match shellexpand::full(local_path) {
-            Ok(x) => PathBuf::from(x.as_ref()),
-            Err(_) => panic!("not a valid local path"),
-        };
+        let mut local_path_pf: PathBuf =
+            match shellexpand::full(local_path).map(|x| Path::new(x.as_ref()).canonicalize()) {
+                Ok(Ok(x)) => x,
+                _ => panic!("not a valid local path"),
+            };
         if local_path_pf.is_relative() {
             local_path_pf = env::current_dir().unwrap().join(local_path_pf);
         }
