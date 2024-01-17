@@ -1,21 +1,13 @@
-mod download;
-pub mod error;
-mod upload;
-mod upload_only_dot_git;
-
+use anyhow::Context;
 use anyhow::Result;
 use crossbeam_channel as cbc;
 use log::error;
 use log::info;
 use openssh::{KnownHosts, Session};
-use openssh_sftp_client::Error;
-use openssh_sftp_client::{Sftp, SftpOptions};
 use pathdiff::diff_paths;
-use rlimit::Resource;
 use ssh2_config::SshConfig;
 use ssh2_config::{HostParams, ParseRule};
-use std::cmp;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::env;
 use std::io::BufReader;
 use std::ops::{Deref, DerefMut};
@@ -96,14 +88,8 @@ impl Connection {
             local_path: local_path_pf,
         }
     }
-
-    fn calculate_remote_path(&self, p: &Path) -> PathBuf {
-        self.remote_path
-            .join(diff_paths(p, &self.local_path).unwrap())
-    }
 }
 
-#[derive(PartialEq)]
 enum Direction {
     Upload,
     Download,
@@ -156,7 +142,7 @@ fn main() -> Result<()> {
 
     let (host_params, _sess) = rt.block_on(get_remote_host(&remote_host)).unwrap();
 
-    let mount = tempfile::tempdir().unwrap();
+    let mount = tempfile::tempdir()?;
 
     let connection = Connection::new(
         remote_path,
@@ -171,11 +157,12 @@ fn main() -> Result<()> {
         .arg(format!("{remote_host}:/"))
         .arg(mount.path())
         .status()
-        .unwrap();
+        .context("Fail to execute `sshfs`, maybe `sshfs` not found ?")?;
 
     let opts = Arc::new(xcp::options::Opts {
         gitignore: true,
         recursive: true,
+        fsync: true,
         verbose: 0,
         workers: 4,
         block_size: 1048576,
@@ -185,7 +172,6 @@ fn main() -> Result<()> {
         no_perms: false,
         driver: xcp::drivers::Drivers::ParFile,
         no_target_directory: false,
-        fsync: false,
         reflink: xcp::operations::Reflink::Auto,
         paths: vec![],
     });
@@ -270,69 +256,6 @@ fn main() -> Result<()> {
     Command::new("umount").arg(mount.path()).status()?;
     pb.end();
     Ok(())
-}
-
-async fn remote_fd(sess: &mut Session, dir: &Path) -> Result<Option<Vec<String>>, Error> {
-    let fd = sess
-        .command("sh")
-        .arg("-c")
-        .arg(&format!("cd {} && fd -H", dir.display()))
-        .stdout(openssh::Stdio::piped())
-        .spawn()
-        .await?
-        .wait_with_output()
-        .await?;
-
-    if !fd.status.success() {
-        return Ok(None);
-    }
-
-    let s = String::from_utf8(fd.stdout).expect("server output was not valid UTF-8");
-    let x: Vec<_> = s
-        .split(|x| x == '\n')
-        .filter(|x| !x.is_empty())
-        .map(|x| x.to_owned())
-        .collect();
-    Ok(Some(x))
-}
-
-async fn get_ignored_and_untracked(
-    sess: &mut Session,
-    dir: &Path,
-) -> Result<HashSet<String>, Error> {
-    let ls = sess
-        .command("sh")
-        .arg("-c")
-        .arg(&format!("cd {} && git ls-files --others -z", dir.display()))
-        .output()
-        .await?;
-    let s = String::from_utf8(ls.stdout).expect("server output was not valid UTF-8");
-    let x: HashSet<_> = s
-        .split(|x| x == '\0')
-        .filter(|x| !x.is_empty())
-        .map(|x| x.to_owned())
-        .collect();
-    Ok(x)
-}
-
-async fn get_untracked(sess: &mut Session, dir: &Path) -> Result<Vec<String>, Error> {
-    let ls = sess
-        .command("sh")
-        .arg("-c")
-        .arg(&format!(
-            "cd {} && git ls-files --others --exclude-standard -z",
-            dir.display(),
-        ))
-        .output()
-        .await?;
-
-    let s = String::from_utf8(ls.stdout).expect("server output was not valid UTF-8");
-    let x: Vec<_> = s
-        .split(|x| x == '\0')
-        .filter(|x| !x.is_empty())
-        .map(|x| x.to_owned())
-        .collect();
-    Ok(x)
 }
 
 async fn get_remote_host(remote_host: &str) -> Result<(HostParams, Session), openssh::Error> {
@@ -422,17 +345,4 @@ async fn get_ssh_session(param: HostParams) -> Result<Session, openssh::Error> {
         KnownHosts::Strict,
     )
     .await
-}
-
-/// Try to increase NOFILE limit and return the current soft limit.
-pub fn increase_nofile_limit() -> std::io::Result<u64> {
-    const DEFAULT_NOFILE_LIMIT: u64 = 16384; // or another number
-
-    let (_soft, hard) = Resource::NOFILE.get()?;
-
-    let target = cmp::min(DEFAULT_NOFILE_LIMIT, hard);
-    Resource::NOFILE.set(target, hard)?;
-
-    let (soft, _hard) = Resource::NOFILE.get()?;
-    Ok(soft)
 }

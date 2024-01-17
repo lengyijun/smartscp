@@ -2,7 +2,7 @@
 
 A replacement of scp, but auto skip git-ignored files
 
-Based on sftp
+It's just a wrapper of sshfs and [xcp](https://github.com/tarka/xcp)
 
 ## Usage
 ```
