@@ -2,6 +2,11 @@ mod download;
 pub mod error;
 mod upload;
 mod upload_only_dot_git;
+
+use anyhow::Result;
+use crossbeam_channel as cbc;
+use log::error;
+use log::info;
 use openssh::{KnownHosts, Session};
 use openssh_sftp_client::Error;
 use openssh_sftp_client::{Sftp, SftpOptions};
@@ -16,7 +21,13 @@ use std::io::BufReader;
 use std::ops::{Deref, DerefMut};
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
+use std::sync::Arc;
 use users::{get_current_uid, get_user_by_uid};
+use xcp::drivers::load_driver;
+use xcp::errors::XcpError;
+use xcp::operations::StatSender;
+use xcp::operations::StatusUpdate;
 
 #[derive(Debug)]
 pub enum PathProvenance {
@@ -98,7 +109,7 @@ enum Direction {
     Download,
 }
 
-fn main() -> Result<(), Error> {
+fn main() -> Result<()> {
     let mut arg_iter = env::args().skip(1);
     let arg1: String = arg_iter.next().unwrap();
     let arg2: String = arg_iter.next().unwrap();
@@ -143,48 +154,122 @@ fn main() -> Result<(), Error> {
         .build()
         .unwrap();
 
-    let (host_params, sess) = rt.block_on(get_remote_host(&remote_host)).unwrap();
+    let (host_params, _sess) = rt.block_on(get_remote_host(&remote_host)).unwrap();
 
-    let sftp = rt
-        .block_on(Sftp::from_session(sess, SftpOptions::new()))
-        .unwrap();
+    let mount = tempfile::tempdir().unwrap();
 
     let connection = Connection::new(
         remote_path,
         &local_path,
         host_params.user.map(|u| format!("/home/{u}")),
     );
+    let remote_path = mount
+        .path()
+        .join(diff_paths(&*connection.remote_path, "/").unwrap());
 
-    match direction {
-        Direction::Upload => {
-            /*
-            // only upload `.git/` and `git checkout` remotely
-            // faster but with bugs
-            let (_host_params, sess) = rt.block_on(get_remote_host(&remote_host)).unwrap();
-            let mut uploader = upload_only_dot_git::Uploader {
-                c: connection,
-                sess,
-                sftp: &sftp,
-                rt,
-            };
-            match uploader.upload() {
-                Ok(_) => {}
-                Err(e) => eprintln!("{:?}", e),
-            }
-             */
+    Command::new("sshfs")
+        .arg(format!("{remote_host}:/"))
+        .arg(mount.path())
+        .status()
+        .unwrap();
 
-            // upload directory with respect to .gitignore
-            rt.block_on(upload::upload(connection, &sftp)).unwrap();
+    let opts = Arc::new(xcp::options::Opts {
+        gitignore: true,
+        recursive: true,
+        verbose: 0,
+        workers: 4,
+        block_size: 1048576,
+        no_clobber: false,
+        glob: false,
+        no_progress: false,
+        no_perms: false,
+        driver: xcp::drivers::Drivers::ParFile,
+        no_target_directory: false,
+        fsync: false,
+        reflink: xcp::operations::Reflink::Auto,
+        paths: vec![],
+    });
 
-            Ok(())
+    let (source, dest): (PathBuf, PathBuf) = match direction {
+        Direction::Upload => (connection.local_path, remote_path),
+        Direction::Download => (remote_path, connection.local_path),
+    };
+
+    let pb = xcp::progress::create_bar(&opts, 0)?;
+    let (stat_tx, stat_rx) = cbc::unbounded();
+    let stats = StatSender::new(stat_tx, &opts);
+
+    let driver = load_driver(&opts)?;
+
+    if dest.is_file() {
+        // Special case; attemping to rename/overwrite existing file.
+        if opts.no_clobber {
+            return Err(XcpError::DestinationExists(
+                "Destination file exists and --no-clobber is set.",
+                dest,
+            )
+            .into());
         }
-        Direction::Download => {
-            let (_host_params, sess) = rt.block_on(get_remote_host(&remote_host)).unwrap();
-            rt.block_on(download::download(connection, sess, sftp))
-                .unwrap();
-            Ok(())
+
+        /*
+        // Special case: Attempt to overwrite a file with
+        // itself. Always disallow for now.
+        if is_same_file(&source, &dest)? {
+            return Err(XcpError::DestinationExists(
+                "Source and destination is the same file.",
+                dest,
+            )
+            .into());
+        }
+         */
+
+        info!("Copying file {:?} to {:?}", source, dest);
+        driver.copy_single(&source, &dest, stats)?;
+    } else {
+        // Sanity-check all sources up-front
+        info!("Copying source {:?} to {:?}", source, dest);
+        if !source.exists() {
+            return Err(XcpError::InvalidSource("Source does not exist.").into());
+        }
+
+        if source.is_dir() && !opts.recursive {
+            return Err(XcpError::InvalidSource(
+                "Source is directory and --recursive not specified.",
+            )
+            .into());
+        }
+
+        if &source == &dest {
+            return Err(XcpError::InvalidSource("Cannot copy a directory into itself").into());
+        }
+
+        if dest.exists() && !dest.is_dir() {
+            return Err(XcpError::InvalidDestination(
+                "Source is directory but target exists and is not a directory",
+            )
+            .into());
+        }
+
+        driver.copy_all(vec![source], &dest, stats)?;
+    }
+
+    // Gather the results as we go; our end of the channel has been
+    // moved to the driver call and will end when drained.
+    for stat in stat_rx {
+        match stat {
+            StatusUpdate::Copied(v) => pb.inc(v),
+            StatusUpdate::Size(v) => pb.inc_size(v),
+            StatusUpdate::Error(e) => {
+                // FIXME: Optional continue?
+                error!("Received error: {}", e);
+                return Err(e.into());
+            }
         }
     }
+
+    Command::new("umount").arg(mount.path()).status()?;
+    pb.end();
+    Ok(())
 }
 
 async fn remote_fd(sess: &mut Session, dir: &Path) -> Result<Option<Vec<String>>, Error> {

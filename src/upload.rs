@@ -1,5 +1,4 @@
 /// this module works similar to `fd -H`
-
 use crate::increase_nofile_limit;
 use crate::Connection;
 use futures::stream::{self, StreamExt};

@@ -21,3 +21,7 @@ git2 = "0.18.1"
 walkdir = "2.4.0"
 anyhow = "1.0.75"
 ignore = "0.4.20"
+xcp = {path = "../xcp"}
+tempfile = "3.9.0"
+crossbeam-channel = "0.5.11"
+log = "0.4.20"
