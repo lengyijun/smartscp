@@ -3,7 +3,6 @@ use anyhow::Result;
 use crossbeam_channel as cbc;
 use log::error;
 use log::info;
-use openssh::{KnownHosts, Session};
 use pathdiff::diff_paths;
 use ssh2_config::SshConfig;
 use ssh2_config::{HostParams, ParseRule};
@@ -15,7 +14,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
-use users::{get_current_uid, get_user_by_uid};
 use xcp::drivers::load_driver;
 use xcp::errors::XcpError;
 use xcp::operations::StatSender;
@@ -140,7 +138,7 @@ fn main() -> Result<()> {
         .build()
         .unwrap();
 
-    let (host_params, _sess) = rt.block_on(get_remote_host(&remote_host)).unwrap();
+    let host_params = rt.block_on(get_remote_host(&remote_host)).unwrap();
 
     let mount = tempfile::tempdir()?;
 
@@ -175,6 +173,17 @@ fn main() -> Result<()> {
         reflink: xcp::operations::Reflink::Auto,
         paths: vec![],
     });
+
+    match direction {
+        Direction::Upload => {
+            println!("local: {:?}", connection.local_path);
+            println!("remote: {:?}", connection.remote_path.deref());
+        }
+        Direction::Download => {
+            println!("remote: {:?}", connection.remote_path.deref());
+            println!("local: {:?}", connection.local_path);
+        }
+    }
 
     let (source, dest): (PathBuf, PathBuf) = match direction {
         Direction::Upload => (connection.local_path, remote_path),
@@ -258,7 +267,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-async fn get_remote_host(remote_host: &str) -> Result<(HostParams, Session), openssh::Error> {
+async fn get_remote_host(remote_host: &str) -> Result<HostParams, openssh::Error> {
     let param = match remote_host.split_once(|x| x == '@') {
         Some((user_name, ip)) => HostParams {
             bind_address: None,
@@ -301,48 +310,5 @@ async fn get_remote_host(remote_host: &str) -> Result<(HostParams, Session), ope
             config.query(remote_host)
         }
     };
-    match get_ssh_session(param.clone()).await {
-        Ok(session) => Ok((param, session)),
-        Err(_) => {
-            let user = get_user_by_uid(get_current_uid()).unwrap();
-            let h = HostParams {
-                bind_address: None,
-                bind_interface: None,
-                ca_signature_algorithms: None,
-                certificate_file: None,
-                ciphers: None,
-                compression: None,
-                connection_attempts: None,
-                connect_timeout: None,
-                host_key_algorithms: None,
-                host_name: Some(remote_host.to_owned()),
-                identity_file: None,
-                ignore_unknown: None,
-                kex_algorithms: None,
-                mac: None,
-                port: None,
-                pubkey_accepted_algorithms: None,
-                pubkey_authentication: None,
-                remote_forward: None,
-                server_alive_interval: None,
-                tcp_keep_alive: None,
-                user: Some(user.name().to_str().unwrap().to_owned()),
-                ignored_fields: HashMap::new(),
-            };
-            get_ssh_session(h.clone()).await.map(|session| (h, session))
-        }
-    }
-}
-
-async fn get_ssh_session(param: HostParams) -> Result<Session, openssh::Error> {
-    Session::connect_mux(
-        format!(
-            "ssh://{}@{}:{}",
-            param.user.unwrap(),
-            param.host_name.unwrap(),
-            param.port.unwrap_or(22)
-        ),
-        KnownHosts::Strict,
-    )
-    .await
+    Ok(param)
 }

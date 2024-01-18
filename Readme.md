@@ -4,6 +4,11 @@ A replacement of scp, but auto skip git-ignored files
 
 It's just a wrapper of sshfs and [xcp](https://github.com/tarka/xcp)
 
+## Install
+```
+cargo install --git https://github.com/lengyijun/smartscp --branch sshfs
+```
+
 ## Usage
 ```
 smartscp remote-host:path local_path
@@ -16,20 +21,18 @@ smartscp local_path remote-host:remote-path
 
 git-ignored files will not be scped
 
-2. no `-r` needed in transferring folder
-
-3. auto fill the path
+2. auto fill-in the remote path
 ```
 # auto complete the destination: `remote_host:~/.local/share`
 smartscp ~/.local/share remote_host
 ```
 
-## Not supported yet
-1. use password to authorize
-2. filename contains ":"
+3. no `-r` needed in transferring folder
 
-## Drawback
-1. unnecessary mkdir
+4. support interactive password input, but not recommanded
+
+## Not supported yet
+1. filename contains ":"
 
 ## Notice
 Not compatible with scp
@@ -43,9 +46,7 @@ A: rsync doesn't support complicated exclude rules
 A: It's not a trival work
 
 ### Q: why transfer failed ?
-A: 1. remote readonly files exists
-
-   2. fd limits reached, try `ulimit -n 50000`
+A: remote readonly files exists
 
 ## Reference
 [Why scp is bad and difference between scp and sftp](https://goteleport.com/blog/scp-familiar-simple-insecure-slow/#alternatives-to-scp)
