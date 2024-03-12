@@ -133,12 +133,8 @@ fn main() -> Result<()> {
             unimplemented!("don't support filename contains :")
         }
     };
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
 
-    let host_params = rt.block_on(get_remote_host(&remote_host)).unwrap();
+    let host_params = get_remote_host(&remote_host).unwrap();
 
     let mount = tempfile::tempdir()?;
 
@@ -267,7 +263,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-async fn get_remote_host(remote_host: &str) -> Result<HostParams> {
+fn get_remote_host(remote_host: &str) -> Result<HostParams> {
     let param = match remote_host.split_once(|x| x == '@') {
         Some((user_name, ip)) => HostParams {
             bind_address: None,
