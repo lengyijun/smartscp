@@ -267,7 +267,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-async fn get_remote_host(remote_host: &str) -> Result<HostParams, openssh::Error> {
+async fn get_remote_host(remote_host: &str) -> Result<HostParams> {
     let param = match remote_host.split_once(|x| x == '@') {
         Some((user_name, ip)) => HostParams {
             bind_address: None,
