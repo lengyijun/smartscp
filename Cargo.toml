@@ -2,6 +2,7 @@
 name = "smartscp"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -14,3 +15,7 @@ xcp = {git = "https://github.com/lengyijun/xcp", branch = "library"}
 tempfile = "3.9.0"
 crossbeam-channel = "0.5.11"
 log = "0.4.20"
+shadow-rs = { version = "1", default-features = false }
+
+[build-dependencies]
+shadow-rs = "1"

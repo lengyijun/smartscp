@@ -4,6 +4,7 @@ use crossbeam_channel as cbc;
 use log::error;
 use log::info;
 use pathdiff::diff_paths;
+use shadow_rs::shadow;
 use ssh2_config::SshConfig;
 use ssh2_config::{HostParams, ParseRule};
 use std::collections::HashMap;
@@ -18,6 +19,8 @@ use xcp::drivers::load_driver;
 use xcp::errors::XcpError;
 use xcp::operations::StatSender;
 use xcp::operations::StatusUpdate;
+
+shadow!(build);
 
 #[derive(Debug)]
 pub enum PathProvenance {
@@ -93,10 +96,44 @@ enum Direction {
     Download,
 }
 
+fn print_help() {
+    println!("Usage:");
+    println!("  smartscp [local_path] [remote_host[:remote_path]]");
+    println!("  smartscp [remote_host:remote_path] [local_path]");
+    println!();
+
+    println!("https://github.com/lengyijun/smartscp");
+    println!("version: {}", build::COMMIT_HASH);
+}
+
 fn main() -> Result<()> {
     let mut arg_iter = env::args().skip(1);
-    let arg1: String = arg_iter.next().unwrap();
-    let arg2: String = arg_iter.next().unwrap();
+    let arg1: String;
+    let arg2: String;
+
+    match arg_iter.next() {
+        Some(a) => {
+            if a == "--help" || a == "-h" {
+                print_help();
+                return Ok(());
+            }
+            arg1 = a;
+        }
+        None => {
+            print_help();
+            return Ok(());
+        }
+    }
+
+    match arg_iter.next() {
+        Some(a) => {
+            arg2 = a;
+        }
+        None => {
+            panic!("expect 2 arguments, meet 1 argument");
+        }
+    }
+
     if arg_iter.next().is_some() {
         panic!("expect 2 arguments, meet more than 2");
     }
