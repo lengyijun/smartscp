@@ -223,6 +223,10 @@ fn main() -> Result<()> {
         Direction::Download => (remote_path, connection.local_path),
     };
 
+    if source.is_file() && !dest.is_dir() {
+        create_destination_parent(&dest)?;
+    }
+
     let pb = xcp::progress::create_bar(&opts, 0)?;
     let (stat_tx, stat_rx) = cbc::unbounded();
     let stats = StatSender::new(stat_tx, &opts);
@@ -300,6 +304,17 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+fn create_destination_parent(dest: &Path) -> Result<()> {
+    if let Some(parent) = dest
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create destination directory {:?}", parent))?;
+    }
+    Ok(())
+}
+
 fn get_remote_host(remote_host: &str) -> Result<HostParams> {
     let param = match remote_host.split_once(|x| x == '@') {
         Some((user_name, ip)) => HostParams {
@@ -344,4 +359,19 @@ fn get_remote_host(remote_host: &str) -> Result<HostParams> {
         }
     };
     Ok(param)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::create_destination_parent;
+
+    #[test]
+    fn creates_missing_destination_parent_directories() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let destination = temp_dir.path().join("one/two/file");
+
+        create_destination_parent(&destination).unwrap();
+
+        assert!(destination.parent().unwrap().is_dir());
+    }
 }
